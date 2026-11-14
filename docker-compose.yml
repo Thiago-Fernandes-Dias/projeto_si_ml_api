@@ -1,0 +1,69 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: keystroke-auth-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-keystroke_biometrics}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-keystroke_biometrics}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - keystroke-network
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: keystroke-auth-api
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-django-insecure-docker-secret-key}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,api}
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-keystroke_biometrics}
+      BIOMETRICS_MODELS_DIR: /app/models_data
+    ports:
+      - "8000:8000"
+    volumes:
+      - models_data:/app/models_data
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - keystroke-network
+    restart: unless-stopped
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: keystroke-auth-scheduler
+    command: ["sh", "-c", "python manage.py migrate --noinput && python manage.py run_scheduler"]
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-django-insecure-docker-secret-key}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-keystroke_biometrics}
+      BIOMETRICS_MODELS_DIR: /app/models_data
+    volumes:
+      - models_data:/app/models_data
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - keystroke-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  models_data:
+
+networks:
+  keystroke-network:
+    name: keystroke-network
+    driver: bridge
