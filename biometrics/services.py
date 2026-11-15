@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ import numpy as np
 from django.conf import settings
 from django.db import models, transaction
 
+from biometrics.logging_utils import log_structured
 from biometrics.ml.features import (
     FeatureValidationError,
     build_schema,
@@ -30,6 +32,8 @@ from biometrics.models import (
     TrainingTrigger,
     User,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class UserNotFoundError(Exception):
@@ -80,13 +84,40 @@ def _resolve_user(
             uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
             found = User.objects.filter(id=uid).first()
             if found is not None:
+                log_structured(
+                    logger,
+                    logging.DEBUG,
+                    "ml_api.user.resolved",
+                    "Usuário resolvido por userId.",
+                    lookupBy="userId",
+                    found=True,
+                    userId=str(found.id),
+                    username=found.nome,
+                )
                 return found
         except (ValueError, TypeError):
-            pass
+            log_structured(
+                logger,
+                logging.DEBUG,
+                "ml_api.user.invalid_id",
+                "Formato inválido de userId recebido na ML API.",
+                userId=str(user_id),
+            )
 
     if username:
         clean = normalize_username(username)
-        return User.objects.filter(nome__iexact=clean).first()
+        found = User.objects.filter(nome__iexact=clean).first()
+        log_structured(
+            logger,
+            logging.DEBUG,
+            "ml_api.user.resolved",
+            "Consulta de usuário por username concluída.",
+            lookupBy="username",
+            found=found is not None,
+            username=clean,
+            userId=str(found.id) if found is not None else None,
+        )
+        return found
     return None
 
 
@@ -238,6 +269,20 @@ def enroll_user(
     genuine_matrix = np.vstack(vectors)
     pos_schema = positional_schema(genuine_matrix.shape[1])
 
+    log_structured(
+        logger,
+        logging.DEBUG,
+        "ml_api.enrollment.training_started",
+        "Vetores preparados para treinamento inicial de enrollment.",
+        flow="enrollment",
+        userId=str(user.id),
+        username=user.nome,
+        sampleCount=int(genuine_matrix.shape[0]),
+        vectorDimension=int(genuine_matrix.shape[1]),
+        inputSource="database" if (samples is None or len(samples) == 0) else "payload",
+        hasDictSchema=dict_schema is not None,
+    )
+
     training_result = train_user_model(
         genuine=genuine_matrix,
         schema=pos_schema,
@@ -259,6 +304,19 @@ def enroll_user(
             trigger=TrainingTrigger.ENROLLMENT,
         )
 
+    log_structured(
+        logger,
+        logging.DEBUG,
+        "ml_api.enrollment.completed",
+        "Modelo inicial persistido após enrollment.",
+        flow="enrollment",
+        userId=str(locked_user.id),
+        username=locked_user.nome,
+        modelId=trained_model.id,
+        modelVersion=trained_model.versao,
+        algorithm=trained_model.algoritmo,
+        threshold=training_result.stats.get("threshold"),
+    )
     return trained_model
 
 
@@ -316,6 +374,21 @@ def authenticate_user(
         )
 
     threshold = float(getattr(estimator, "threshold", settings.BIOMETRICS["DECISION_THRESHOLD"]))
+    log_structured(
+        logger,
+        logging.DEBUG,
+        "ml_api.login.inference_starting",
+        "Executando inferência biométrica.",
+        flow="login",
+        userId=str(user.id),
+        username=user.nome,
+        modelId=int(active_model.id),
+        modelVersion=int(active_model.versao),
+        algorithm=active_model.algoritmo,
+        inputType="vector" if vector is not None else "features",
+        vectorDimension=int(len(pos_vector)),
+        threshold=round(threshold, 4),
+    )
     classification = classify(estimator, pos_vector, threshold=threshold)
     sample_label = label_for(classification.genuine_probability, threshold=threshold)
     should_record_for_retraining = bool(
@@ -336,6 +409,25 @@ def authenticate_user(
     else:
         message = "Acesso bloqueado: o ritmo de digitação diverge do perfil legítimo."
 
+    log_structured(
+        logger,
+        logging.DEBUG,
+        "ml_api.login.inference_completed",
+        "Resultado da inferência biométrica calculado.",
+        flow="login",
+        userId=str(user.id),
+        username=user.nome,
+        modelId=int(active_model.id),
+        modelVersion=int(active_model.versao),
+        decision=classification.decision,
+        confidence=round(classification.genuine_probability, 4),
+        threshold=round(threshold, 4),
+        sampleLabel=str(sample_label),
+        shouldRecordForRetraining=should_record_for_retraining,
+        inferenceTimeMs=round(classification.inference_time_ms, 3),
+        attemptHoldMs=round(attempt_hold_ms, 2),
+        userHoldMs=round(user_hold_ms, 2),
+    )
     return AuthenticationOutcome(
         decision=classification.decision,
         confidence=classification.genuine_probability,
@@ -391,7 +483,19 @@ def retrain_user(
             new_logins_qs = new_logins_qs.filter(coletada_em__gt=active_model.criado_em)
 
         min_new_samples = int(settings.BIOMETRICS["RETRAIN_MIN_NEW_SAMPLES"])
-        if not force and active_model is not None and new_logins_qs.count() < min_new_samples:
+        new_logins_count = new_logins_qs.count()
+        if not force and active_model is not None and new_logins_count < min_new_samples:
+            log_structured(
+                logger,
+                logging.DEBUG,
+                "ml_api.retrain.skipped",
+                "Retreinamento adiado: amostras novas insuficientes.",
+                flow="retrain",
+                userId=str(locked_user.id),
+                username=locked_user.nome,
+                newGenuineSamples=new_logins_count,
+                minRequired=min_new_samples,
+            )
             return None
 
         cfg = get_m2005_config()
@@ -470,7 +574,21 @@ def retrain_user(
                 if prev_keys is not None:
                     training_result.model.source_feature_keys_ = prev_keys  # type: ignore[attr-defined]
 
-        return save_model(user=locked_user, result=training_result, trigger=trigger)
+        saved = save_model(user=locked_user, result=training_result, trigger=trigger)
+        log_structured(
+            logger,
+            logging.DEBUG,
+            "ml_api.retrain.completed",
+            "Nova versão do modelo salva após retreinamento.",
+            flow="retrain",
+            userId=str(locked_user.id),
+            username=locked_user.nome,
+            mode="incremental" if can_adapt_incrementally else "full_window",
+            modelId=saved.id,
+            modelVersion=saved.versao,
+            trigger=str(trigger),
+        )
+        return saved
 
 
 def retrain_due_users(now: Any = None, force: bool = False) -> list[ModeloBiometrico]:

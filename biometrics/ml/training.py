@@ -1,4 +1,5 @@
 import copy
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -6,7 +7,10 @@ import numpy as np
 import pandas as pd
 from django.conf import settings
 
+from biometrics.logging_utils import log_structured
 from biometrics.ml.m2005 import AdaptiveM2005Alg, M2005Alg
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -122,6 +126,19 @@ def train_user_model(
     resolved_schema = _resolve_schema(genuine_arr.shape[1], schema)
     df_genuine = pd.DataFrame(genuine_arr, columns=resolved_schema)
 
+    log_structured(
+        logger,
+        logging.DEBUG,
+        "ml.train.started",
+        "Treinando modelo biométrico do usuário.",
+        algorithm=cfg.algorithm,
+        variant=cfg.variant,
+        sampleCount=int(genuine_arr.shape[0]),
+        featureCount=int(genuine_arr.shape[1]),
+        baseThreshold=cfg.threshold,
+        windowSize=cfg.window_size,
+    )
+
     if cfg.algorithm in {"M2005_IDB", "M2005_DB"}:
         classifier: AdaptiveM2005Alg | M2005Alg = AdaptiveM2005Alg(
             threshold=cfg.threshold,
@@ -143,6 +160,18 @@ def train_user_model(
 
     classifier.fit(df_genuine)
     stats = _build_training_stats(classifier, df_genuine, cfg)
+    log_structured(
+        logger,
+        logging.DEBUG,
+        "ml.train.completed",
+        "Treinamento do modelo biométrico concluído.",
+        algorithm=stats.get("algorithm"),
+        threshold=round(float(stats.get("threshold", cfg.threshold)), 4),
+        gallerySize=stats.get("gallery_size"),
+        meanGenuineScore=round(float(stats.get("mean_genuine_score", 0.0)), 4),
+        minGenuineScore=round(float(stats.get("min_genuine_score", 0.0)), 4),
+        genuineAcceptanceRate=round(float(stats.get("genuine_acceptance_rate", 0.0)), 4),
+    )
     return TrainingResult(model=classifier, stats=stats)
 
 
@@ -155,11 +184,13 @@ def adapt_user_model(
     cfg = get_m2005_config()
     cloned = copy.deepcopy(estimator)
     cloned.set_window_size(cfg.window_size)
+    new_samples_count = 0
 
     if new_genuine is not None and len(new_genuine) > 0:
         new_arr = np.asarray(new_genuine, dtype=np.float64)
         if new_arr.ndim != 2:
             raise ValueError("A matriz de novas amostras genuínas deve ser 2D.")
+        new_samples_count = int(new_arr.shape[0])
         resolved_schema = (
             list(cloned.feature_names_)
             if len(cloned.feature_names_) == new_arr.shape[1]
@@ -174,4 +205,15 @@ def adapt_user_model(
         else pd.DataFrame(columns=cloned.feature_names_)
     )
     stats = _build_training_stats(cloned, eval_df, cfg)
+    log_structured(
+        logger,
+        logging.DEBUG,
+        "ml.adapt.completed",
+        "Adaptação incremental do modelo biométrico concluída.",
+        algorithm=stats.get("algorithm"),
+        newSamplesCount=new_samples_count,
+        gallerySize=stats.get("gallery_size"),
+        growingCount=stats.get("growing_count"),
+        threshold=round(float(stats.get("threshold", cfg.threshold)), 4),
+    )
     return TrainingResult(model=cloned, stats=stats)

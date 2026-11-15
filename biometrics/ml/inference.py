@@ -1,9 +1,14 @@
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 from django.conf import settings
+
+from biometrics.logging_utils import log_structured
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,18 @@ def classify(
     elapsed_ms = (time.perf_counter() - start) * 1000.0
 
     decision = "GENUINE" if genuine_probability >= resolved_threshold else "IMPOSTOR"
+    log_structured(
+        logger,
+        logging.DEBUG,
+        "ml.classify.completed",
+        "Classificação biométrica executada.",
+        decision=decision,
+        genuineProbability=round(genuine_probability, 4),
+        threshold=round(resolved_threshold, 4),
+        inferenceTimeMs=round(elapsed_ms, 3),
+        vectorLength=int(arr.size),
+        modelType=type(model).__name__,
+    )
     return Classification(
         decision=decision,
         genuine_probability=genuine_probability,

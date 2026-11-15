@@ -1,4 +1,5 @@
 import logging
+import uuid
 from typing import Any
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -8,6 +9,7 @@ from django.core.management.base import BaseCommand
 from django.db import close_old_connections
 from django.utils import timezone
 
+from biometrics.logging_utils import correlation_context, log_structured
 from biometrics.services import retrain_due_users
 
 logger = logging.getLogger(__name__)
@@ -15,10 +17,26 @@ logger = logging.getLogger(__name__)
 
 def scheduled_retrain_job() -> int:
     close_old_connections()
+    correlation_id = f"sched-{uuid.uuid4().hex[:12]}"
     try:
-        retrained = retrain_due_users(now=timezone.now(), force=False)
-        logger.info("Execução agendada concluída: %d modelo(s) retreinado(s).", len(retrained))
-        return len(retrained)
+        with correlation_context(correlation_id, flow="retrain"):
+            log_structured(
+                logger,
+                logging.DEBUG,
+                "scheduler.retrain_cycle_started",
+                "Ciclo agendado de retreinamento iniciado.",
+                flow="retrain",
+            )
+            retrained = retrain_due_users(now=timezone.now(), force=False)
+            log_structured(
+                logger,
+                logging.INFO,
+                "scheduler.retrain_cycle_completed",
+                "Execução agendada concluída.",
+                flow="retrain",
+                retrainedCount=len(retrained),
+            )
+            return len(retrained)
     finally:
         close_old_connections()
 

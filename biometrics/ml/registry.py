@@ -13,6 +13,7 @@ from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
+from biometrics.logging_utils import log_structured
 from biometrics.ml.training import TrainingResult
 from biometrics.models import ModeloBiometrico, TrainingTrigger, User
 
@@ -81,6 +82,18 @@ def save_model(
             encoding="utf-8",
         )
 
+    log_structured(
+        logger,
+        logging.DEBUG,
+        "ml.registry.saved",
+        "Artefato do modelo biométrico salvo no registro.",
+        userId=str(user.id),
+        modelId=trained_model.id,
+        version=trained_model.versao,
+        algorithm=algorithm_name,
+        trigger=str(trigger),
+        sha256Prefix=digest[:8],
+    )
     return trained_model
 
 
@@ -110,6 +123,14 @@ def _load_model_cached(
             current_sklearn_version,
         )
 
+    log_structured(
+        logger,
+        logging.DEBUG,
+        "ml.registry.loaded_from_disk",
+        "Modelo carregado do disco após verificação SHA-256 (cache miss).",
+        modelId=model_id,
+        sha256Prefix=actual_sha256[:8],
+    )
     return joblib.load(file_path)
 
 

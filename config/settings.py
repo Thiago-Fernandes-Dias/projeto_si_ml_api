@@ -4,6 +4,8 @@ from pathlib import Path
 
 import environ
 
+from biometrics.logging_utils import resolve_debug_logs_enabled
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 env = environ.Env(
@@ -21,6 +23,7 @@ SECRET_KEY = env(
 )
 
 DEBUG = env.bool("DJANGO_DEBUG", default=True)
+BIOMETRICS_DEBUG_LOGS = resolve_debug_logs_enabled(default=DEBUG, environ_map=os.environ)
 
 ALLOWED_HOSTS: list[str] = env.list(
     "DJANGO_ALLOWED_HOSTS",
@@ -40,6 +43,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "biometrics.middleware.CorrelationLoggingMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -132,4 +136,33 @@ BIOMETRICS = {
         "dynamic_threshold": True,
     },
     "MODELS_DIR": Path(env("BIOMETRICS_MODELS_DIR", default=str(BASE_DIR / "models_data"))),
+}
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "structured_json": {
+            "()": "biometrics.logging_utils.StructuredJsonFormatter",
+            "service": "projeto_si_ml_api",
+        },
+    },
+    "handlers": {
+        "stdout": {
+            "class": "logging.StreamHandler",
+            "stream": sys.stdout,
+            "formatter": "structured_json",
+        },
+    },
+    "loggers": {
+        "biometrics": {
+            "handlers": ["stdout"],
+            "level": "DEBUG" if BIOMETRICS_DEBUG_LOGS else "INFO",
+            "propagate": IS_TESTING,
+        },
+    },
+    "root": {
+        "handlers": ["stdout"],
+        "level": "INFO" if BIOMETRICS_DEBUG_LOGS else "WARNING",
+    },
 }

@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 from django.db import connection
 from rest_framework import status
@@ -6,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from biometrics.logging_utils import log_structured
 from biometrics.ml.features import FeatureValidationError, mean_hold_time_ms
 from biometrics.ml.registry import ModelIntegrityError, load_model
 from biometrics.serializers import (
@@ -21,6 +24,8 @@ from biometrics.services import (
     enroll_user,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class HealthView(APIView):
     authentication_classes: list = []
@@ -35,6 +40,15 @@ class HealthView(APIView):
             db_status = "error"
             http_status = status.HTTP_503_SERVICE_UNAVAILABLE
 
+        log_structured(
+            logger,
+            logging.DEBUG,
+            "ml_api.health.checked",
+            "Verificação de saúde da ML API executada.",
+            flow="health",
+            database=db_status,
+            httpStatus=http_status,
+        )
         return Response(
             {"status": "ok" if db_status == "ok" else "degraded", "database": db_status},
             status=http_status,
@@ -48,6 +62,14 @@ class EnrollmentView(APIView):
     def post(self, request: Request) -> Response:
         serializer = EnrollmentRequestSerializer(data=request.data)
         if not serializer.is_valid():
+            log_structured(
+                logger,
+                logging.DEBUG,
+                "ml_api.enrollment.payload_invalid",
+                "Payload de enrollment rejeitado pela validação.",
+                flow="enrollment",
+                errorFields=sorted(serializer.errors.keys()),
+            )
             return Response(
                 {
                     "success": False,
@@ -70,16 +92,43 @@ class EnrollmentView(APIView):
                 samples_count=samples_count,
             )
         except UserNotFoundError as exc:
+            log_structured(
+                logger,
+                logging.DEBUG,
+                "ml_api.enrollment.user_not_found",
+                "Usuário não encontrado durante enrollment.",
+                flow="enrollment",
+                username=username,
+                userId=str(user_id) if user_id else None,
+            )
             return Response(
                 {"success": False, "message": str(exc)},
                 status=status.HTTP_404_NOT_FOUND,
             )
         except AlreadyEnrolledError as exc:
+            log_structured(
+                logger,
+                logging.DEBUG,
+                "ml_api.enrollment.already_enrolled",
+                "Enrollment duplicado rejeitado.",
+                flow="enrollment",
+                username=username,
+                userId=str(user_id) if user_id else None,
+            )
             return Response(
                 {"success": False, "message": str(exc)},
                 status=status.HTTP_409_CONFLICT,
             )
         except EnrollmentValidationError as exc:
+            log_structured(
+                logger,
+                logging.DEBUG,
+                "ml_api.enrollment.validation_failed",
+                "Validação biométrica falhou durante enrollment.",
+                flow="enrollment",
+                username=username,
+                reason=str(exc),
+            )
             return Response(
                 {"success": False, "message": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -95,6 +144,20 @@ class EnrollmentView(APIView):
             else 0.0
         )
 
+        log_structured(
+            logger,
+            logging.DEBUG,
+            "ml_api.enrollment.succeeded",
+            "Enrollment concluído com sucesso na ML API.",
+            flow="enrollment",
+            userId=str(trained_model.usuario.id),
+            username=trained_model.usuario.nome,
+            modelId=trained_model.id,
+            modelVersion=trained_model.versao,
+            featureCount=feature_count,
+            samplesRegistered=samples_registered,
+            calculatedAverageHoldMs=avg_hold_ms,
+        )
         return Response(
             {
                 "userId": str(trained_model.usuario.id),
@@ -120,6 +183,14 @@ class AuthenticateView(APIView):
     def post(self, request: Request) -> Response:
         serializer = AuthenticateRequestSerializer(data=request.data)
         if not serializer.is_valid():
+            log_structured(
+                logger,
+                logging.DEBUG,
+                "ml_api.login.payload_invalid",
+                "Payload de autenticação rejeitado pela validação.",
+                flow="login",
+                errorFields=sorted(serializer.errors.keys()),
+            )
             return Response(
                 {
                     "message": "Payload de autenticação inválido.",
@@ -141,26 +212,78 @@ class AuthenticateView(APIView):
                 features=features,
             )
         except UserNotFoundError as exc:
+            log_structured(
+                logger,
+                logging.DEBUG,
+                "ml_api.login.user_not_found",
+                "Usuário não encontrado na autenticação.",
+                flow="login",
+                username=username,
+                userId=str(user_id) if user_id else None,
+            )
             return Response(
                 {"message": str(exc)},
                 status=status.HTTP_404_NOT_FOUND,
             )
         except NotEnrolledError as exc:
+            log_structured(
+                logger,
+                logging.DEBUG,
+                "ml_api.login.not_enrolled",
+                "Usuário ainda sem modelo biométrico ativo.",
+                flow="login",
+                username=username,
+                userId=str(user_id) if user_id else None,
+            )
             return Response(
                 {"message": str(exc)},
                 status=status.HTTP_409_CONFLICT,
             )
         except FeatureValidationError as exc:
+            log_structured(
+                logger,
+                logging.DEBUG,
+                "ml_api.login.feature_validation_failed",
+                "Vetor ou mapa de features inválido na autenticação.",
+                flow="login",
+                username=username,
+                reason=str(exc),
+            )
             return Response(
                 {"message": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except ModelIntegrityError as exc:
+            log_structured(
+                logger,
+                logging.ERROR,
+                "ml_api.login.model_integrity_error",
+                "Falha de integridade do modelo ao autenticar.",
+                flow="login",
+                username=username,
+                error=str(exc),
+            )
             return Response(
                 {"message": str(exc)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+        log_structured(
+            logger,
+            logging.DEBUG,
+            "ml_api.login.responded",
+            "Inferência biométrica concluída na ML API.",
+            flow="login",
+            username=username,
+            userId=str(user_id) if user_id else None,
+            decision=outcome.decision,
+            confidence=round(outcome.confidence, 4),
+            threshold=round(outcome.threshold, 4),
+            inferenceTimeMs=round(outcome.inference_time_ms, 2),
+            modelId=outcome.model_id,
+            modelVersion=outcome.model_version,
+            shouldRecordForRetraining=outcome.should_record_for_retraining,
+        )
         return Response(
             {
                 "decision": outcome.decision,
