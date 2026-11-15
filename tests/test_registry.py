@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from django.db import IntegrityError
 
-from biometrics.ml.features import build_schema, vectorize
+from biometrics.ml.features import positional_schema
 from biometrics.ml.registry import (
     ModelIntegrityError,
     _load_model_cached,
@@ -16,13 +16,13 @@ from biometrics.ml.registry import (
 from biometrics.ml.training import train_user_model
 from biometrics.models import TrainedModel, TrainingTrigger
 from biometrics.services import get_active_model
-from tests.conftest import create_user_in_db, make_genuine_feature_dicts
+from tests.conftest import create_user_in_db, make_genuine_vectors
 
 
 def _build_training_result() -> Any:
-    dicts = make_genuine_feature_dicts(count=5, seed=7)
-    schema = build_schema(dicts)
-    genuine = np.vstack([vectorize(d, schema) for d in dicts])
+    vectors = make_genuine_vectors(count=5, seed=7)
+    schema = positional_schema(len(vectors[0]))
+    genuine = np.vstack(vectors)
     return train_user_model(genuine=genuine, schema=schema)
 
 
@@ -83,3 +83,29 @@ def test_load_model_rejects_tampered_file_and_uses_lru_cache(caplog: Any) -> Non
 
     with pytest.raises(ModelIntegrityError, match="SHA-256"):
         load_model(saved)
+
+
+@pytest.mark.django_db
+def test_save_model_rolls_back_artifacts_and_active_version_on_db_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = create_user_in_db(username="dave")
+    result = _build_training_result()
+    first = save_model(user, result, trigger=TrainingTrigger.ENROLLMENT)
+
+    user_dir = Path(first.file_path).parent
+    active_file = user_dir / "active_version.json"
+    previous_active = active_file.read_text(encoding="utf-8")
+    files_before = {path.name for path in user_dir.iterdir()}
+
+    def fail_save(self: Any, *args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(TrainedModel, "save", fail_save)
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        save_model(user, result, trigger=TrainingTrigger.SCHEDULED)
+
+    assert {path.name for path in user_dir.iterdir()} == files_before
+    assert active_file.read_text(encoding="utf-8") == previous_active
+    assert TrainedModel.objects.filter(usuario=user).count() == 1

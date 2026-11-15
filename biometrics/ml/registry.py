@@ -32,6 +32,17 @@ def _compute_sha256(file_path: Path) -> str:
     return hasher.hexdigest()
 
 
+def write_text_atomic(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        temporary.replace(path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def save_model(
     user: User,
     result: TrainingResult,
@@ -40,54 +51,89 @@ def save_model(
     models_root = Path(settings.BIOMETRICS["MODELS_DIR"])
     user_dir = models_root / str(user.id)
     user_dir.mkdir(parents=True, exist_ok=True)
+    active_file = user_dir / "active_version.json"
+    previous_active = (
+        active_file.read_text(encoding="utf-8") if active_file.is_file() else None
+    )
 
-    with transaction.atomic():
-        max_version = (
-            ModeloBiometrico.objects.select_for_update()
-            .filter(usuario=user)
-            .aggregate(max_v=Max("versao"))["max_v"]
-            or 0
-        )
-        next_version = int(max_version) + 1
-        staging_path = user_dir / f".v{next_version}.tmp.joblib"
-        joblib.dump(result.model, staging_path)
-        digest = _compute_sha256(staging_path)
+    staging_path: Path | None = None
+    model_path: Path | None = None
+    meta_path: Path | None = None
 
-        model_path = user_dir / f"v{next_version}_{digest}.joblib"
-        staging_path.replace(model_path)
+    try:
+        with transaction.atomic():
+            locked_user = User.objects.select_for_update().get(pk=user.pk)
+            max_version = (
+                ModeloBiometrico.objects.select_for_update()
+                .filter(usuario=locked_user)
+                .aggregate(max_v=Max("versao"))["max_v"]
+                or 0
+            )
+            next_version = int(max_version) + 1
 
-        meta_path = Path(f"{model_path}.meta.json")
-        meta_payload = {
-            "sha256": digest,
-            "sklearn_version": sklearn.__version__,
-            "trigger": str(trigger),
-            "training_stats": result.stats,
-        }
-        meta_path.write_text(json.dumps(meta_payload, indent=2), encoding="utf-8")
+            staging_path = user_dir / f".v{next_version}.tmp.joblib"
+            joblib.dump(result.model, staging_path)
+            digest = _compute_sha256(staging_path)
 
-        algorithm_name = str(
-            result.stats.get("algorithm", "M2005_IDB")
-        )[:50]
+            model_path = user_dir / f"v{next_version}_{digest}.joblib"
+            staging_path.replace(model_path)
+            staging_path = None
 
-        trained_model = ModeloBiometrico.objects.create(
-            usuario=user,
-            versao=next_version,
-            algoritmo=algorithm_name,
-            caminho_arquivo=str(model_path),
-            criado_em=timezone.now(),
-        )
-        active_file = user_dir / "active_version.json"
-        active_file.write_text(
-            json.dumps({"active_version": next_version}, indent=2),
-            encoding="utf-8",
-        )
+            meta_path = Path(f"{model_path}.meta.json")
+            meta_payload = {
+                "sha256": digest,
+                "sklearn_version": sklearn.__version__,
+                "trigger": str(trigger),
+                "training_stats": result.stats,
+            }
+            write_text_atomic(meta_path, json.dumps(meta_payload, indent=2))
+
+            algorithm_name = str(
+                result.stats.get("algorithm", "M2005_IDB")
+            )[:50]
+
+            trained_model = ModeloBiometrico.objects.create(
+                usuario=locked_user,
+                versao=next_version,
+                algoritmo=algorithm_name,
+                caminho_arquivo=str(model_path),
+                criado_em=timezone.now(),
+            )
+            write_text_atomic(
+                active_file,
+                json.dumps({"active_version": next_version}, indent=2),
+            )
+    except Exception:
+        for cleanup_path in (staging_path, model_path, meta_path):
+            if cleanup_path is None:
+                continue
+            try:
+                cleanup_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Não foi possível remover artefato órfão '%s'.", cleanup_path)
+
+        if previous_active is None:
+            try:
+                active_file.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(
+                    "Não foi possível remover 'active_version.json' após falha."
+                )
+        else:
+            try:
+                write_text_atomic(active_file, previous_active)
+            except OSError:
+                logger.warning(
+                    "Não foi possível restaurar 'active_version.json' após falha."
+                )
+        raise
 
     log_structured(
         logger,
         logging.DEBUG,
         "ml.registry.saved",
         "Artefato do modelo biométrico salvo no registro.",
-        userId=str(user.id),
+        userId=str(locked_user.id),
         modelId=trained_model.id,
         version=trained_model.versao,
         algorithm=algorithm_name,
