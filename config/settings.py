@@ -121,9 +121,6 @@ BIOMETRICS = {
     "RETRAIN_INTERVAL_MINUTES": env.int("BIOMETRICS_RETRAIN_INTERVAL_MINUTES", default=60),
     "RETRAIN_MIN_NEW_SAMPLES": env.int("BIOMETRICS_RETRAIN_MIN_NEW_SAMPLES", default=5),
     "RETRAIN_GENUINE_WINDOW": env.int("BIOMETRICS_RETRAIN_GENUINE_WINDOW", default=50),
-    "RETRAIN_IMPOSTOR_WINDOW": env.int("BIOMETRICS_RETRAIN_IMPOSTOR_WINDOW", default=50),
-    "SYNTHETIC_NEGATIVES_MIN": env.int("BIOMETRICS_SYNTHETIC_NEGATIVES_MIN", default=50),
-    "SYNTHETIC_NEGATIVES_RATIO": env.int("BIOMETRICS_SYNTHETIC_NEGATIVES_RATIO", default=5),
     "M2005": {
         "threshold": env.float("BIOMETRICS_DECISION_THRESHOLD", default=0.7),
         "window_strategy": "sliding",
@@ -131,12 +128,5 @@ BIOMETRICS = {
         "threshold_method": "min_non_outlier",
         "dynamic_threshold": True,
     },
-    "RANDOM_FOREST": {
-        "n_estimators": 200,
-        "class_weight": "balanced",
-        "random_state": 42,
-        "n_jobs": 1,
-    },
     "MODELS_DIR": Path(env("BIOMETRICS_MODELS_DIR", default=str(BASE_DIR / "models_data"))),
-    "POPULATION_PRIORS_PATH": BASE_DIR / "biometrics" / "data" / "population_priors.json",
 }

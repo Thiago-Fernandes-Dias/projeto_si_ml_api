@@ -1,38 +1,62 @@
 from django.contrib import admin
 
-from biometrics.models import BiometricProfile, KeystrokeSample, TrainedModel
+from biometrics.models import Amostra, ModeloBiometrico, Usuario
 
 
-@admin.register(BiometricProfile)
-class BiometricProfileAdmin(admin.ModelAdmin):
-    list_display = ("user", "feature_count", "enrolled_at")
-    search_fields = ("user__username",)
-    readonly_fields = ("enrolled_at",)
-
-    @admin.display(description="Features")
-    def feature_count(self, obj: BiometricProfile) -> int:
-        return len(obj.feature_names or [])
-
-
-@admin.register(KeystrokeSample)
-class KeystrokeSampleAdmin(admin.ModelAdmin):
+@admin.register(Usuario)
+class UsuarioAdmin(admin.ModelAdmin):
     list_display = (
         "id",
-        "user",
-        "source",
-        "label",
-        "genuine_probability",
-        "classified_by",
-        "created_at",
+        "nome",
+        "biometria_cadastrada_em",
+        "tentativas_falhas",
+        "bloqueado_ate",
+        "criado_em",
     )
-    list_filter = ("source", "label", "created_at")
-    search_fields = ("user__username",)
-    readonly_fields = ("created_at",)
+    search_fields = ("nome",)
+    readonly_fields = ("id", "criado_em")
 
 
-@admin.register(TrainedModel)
-class TrainedModelAdmin(admin.ModelAdmin):
-    list_display = ("user", "version", "trigger", "is_active", "sklearn_version", "created_at")
-    list_filter = ("trigger", "is_active", "created_at")
-    search_fields = ("user__username", "sha256")
-    readonly_fields = ("sha256", "sklearn_version", "created_at")
+@admin.register(Amostra)
+class AmostraAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "usuario",
+        "origem",
+        "repeticao",
+        "decisao",
+        "confianca",
+        "modelo",
+        "coletada_em",
+    )
+    list_filter = ("origem", "decisao", "coletada_em")
+    search_fields = ("usuario__nome",)
+    readonly_fields = (
+        "id",
+        "usuario",
+        "origem",
+        "vetor",
+        "repeticao",
+        "duracao_total_ms",
+        "decisao",
+        "confianca",
+        "modelo",
+        "coletada_em",
+    )
+
+    def has_add_permission(self, request: object) -> bool:
+        return False
+
+    def has_change_permission(self, request: object, obj: object = None) -> bool:
+        return False
+
+    def has_delete_permission(self, request: object, obj: object = None) -> bool:
+        return False
+
+
+@admin.register(ModeloBiometrico)
+class ModeloBiometricoAdmin(admin.ModelAdmin):
+    list_display = ("id", "usuario", "versao", "algoritmo", "caminho_arquivo", "criado_em")
+    list_filter = ("algoritmo", "criado_em")
+    search_fields = ("usuario__nome", "caminho_arquivo")
+    readonly_fields = ("criado_em",)

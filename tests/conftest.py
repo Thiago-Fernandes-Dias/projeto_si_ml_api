@@ -1,10 +1,26 @@
+import uuid
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
+from django.utils import timezone
 
 from biometrics.ml.registry import clear_model_cache
+from biometrics.models import Usuario
+
+
+def create_user_in_db(username: str) -> Usuario:
+    now = timezone.now()
+    return Usuario.objects.create(
+        id=uuid.uuid4(),
+        nome=username.strip().lower(),
+        data_mudanca_senha=now,
+        biometria_cadastrada_em=None,
+        tentativas_falhas=0,
+        bloqueado_ate=None,
+        criado_em=now,
+    )
 
 CMU_SAMPLE_FEATURES: dict[str, float] = {
     "H.period": 0.1491,
@@ -90,7 +106,6 @@ def isolated_models_dir(tmp_path: Path, settings: Any) -> Path:
     settings.BIOMETRICS = {
         **settings.BIOMETRICS,
         "MODELS_DIR": models_dir,
-        "POPULATION_PRIORS_PATH": tmp_path / "population_priors.json",
     }
     clear_model_cache()
     yield models_dir

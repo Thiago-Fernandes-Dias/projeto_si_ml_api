@@ -15,9 +15,7 @@ def test_train_user_model_separates_genuine_from_2x_slower_impostor() -> None:
 
     result = train_user_model(
         genuine=genuine,
-        real_impostors=None,
         schema=schema,
-        rng=np.random.default_rng(42),
     )
 
     model = result.model
@@ -28,7 +26,9 @@ def test_train_user_model_separates_genuine_from_2x_slower_impostor() -> None:
     assert result.stats["threshold_method"] == "min_non_outlier"
     assert result.stats["dynamic_threshold"] is True
     assert result.stats["genuine"] == 5
-    assert result.stats["synthetic"] >= 50
+    assert result.stats["gallery_size"] == 5
+    assert "synthetic" not in result.stats
+    assert "real_impostors" not in result.stats
 
     genuine_probe = genuine[0]
     genuine_classification = classify(model, genuine_probe)

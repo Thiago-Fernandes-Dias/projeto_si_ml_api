@@ -1,3 +1,4 @@
+import numpy as np
 from django.db import connection
 from rest_framework import status
 from rest_framework.request import Request
@@ -5,23 +6,19 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from biometrics.ml.features import FeatureValidationError
-from biometrics.ml.registry import ModelIntegrityError
+from biometrics.ml.features import FeatureValidationError, mean_hold_time_ms
+from biometrics.ml.registry import ModelIntegrityError, load_model
 from biometrics.serializers import (
     AuthenticateRequestSerializer,
     EnrollmentRequestSerializer,
-    RegisterRequestSerializer,
 )
 from biometrics.services import (
     AlreadyEnrolledError,
     EnrollmentValidationError,
-    InvalidCredentialsError,
     NotEnrolledError,
-    UserAlreadyExistsError,
     UserNotFoundError,
     authenticate_user,
     enroll_user,
-    register_user,
 )
 
 
@@ -44,48 +41,6 @@ class HealthView(APIView):
         )
 
 
-class RegisterView(APIView):
-    authentication_classes: list = []
-    permission_classes: list = []
-
-    def post(self, request: Request) -> Response:
-        serializer = RegisterRequestSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(
-                {
-                    "success": False,
-                    "message": "Dados de cadastro inválidos.",
-                    "errors": serializer.errors,
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        username = serializer.validated_data["username"]
-        password = serializer.validated_data["resolved_password"]
-
-        try:
-            user = register_user(username=username, password=password)
-        except UserAlreadyExistsError as exc:
-            return Response(
-                {"success": False, "message": str(exc)},
-                status=status.HTTP_409_CONFLICT,
-            )
-        except ValueError as exc:
-            return Response(
-                {"success": False, "message": str(exc)},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        return Response(
-            {
-                "username": user.username,
-                "success": True,
-                "message": "Usuário cadastrado com sucesso.",
-            },
-            status=status.HTTP_201_CREATED,
-        )
-
-
 class EnrollmentView(APIView):
     authentication_classes: list = []
     permission_classes: list = []
@@ -102,13 +57,15 @@ class EnrollmentView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        username = serializer.validated_data["username"]
-        samples = serializer.validated_data["samples"]
+        username = serializer.validated_data.get("username")
+        user_id = serializer.validated_data.get("userId")
+        samples = serializer.validated_data.get("samples")
         samples_count = serializer.validated_data.get("samplesCount")
 
         try:
             trained_model = enroll_user(
                 username=username,
+                user_id=user_id,
                 samples=samples,
                 samples_count=samples_count,
             )
@@ -128,13 +85,25 @@ class EnrollmentView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        feature_count = len(trained_model.user.biometric_profile.feature_names)
+        estimator = load_model(trained_model)
+        feature_count = len(getattr(estimator, "feature_names_", []))
+        samples_registered = int(trained_model.training_stats.get("genuine", 0))
+        gallery = getattr(estimator, "_gallery", [])
+        avg_hold_ms = (
+            round(float(np.mean([mean_hold_time_ms(v.to_numpy()) for v in gallery])), 1)
+            if gallery
+            else 0.0
+        )
+
         return Response(
             {
-                "username": trained_model.user.username,
-                "modelVersion": trained_model.version,
+                "userId": str(trained_model.usuario.id),
+                "username": trained_model.usuario.nome,
+                "modelId": trained_model.id,
+                "modelVersion": trained_model.versao,
                 "featureCount": feature_count,
-                "samplesRegistered": len(samples),
+                "samplesRegistered": samples_registered,
+                "calculatedAverageHoldMs": avg_hold_ms,
                 "success": True,
                 "message": "Enrollment concluído e modelo biométrico calibrado com sucesso.",
             },
@@ -159,25 +128,24 @@ class AuthenticateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        username = serializer.validated_data["username"]
-        password = serializer.validated_data["resolved_password"]
-        features = serializer.validated_data["resolved_features"]
-        raw_timings = serializer.validated_data["resolved_raw_timings"]
+        username = serializer.validated_data.get("username")
+        user_id = serializer.validated_data.get("userId")
+        vector = serializer.validated_data.get("resolved_vector")
+        features = serializer.validated_data.get("resolved_features")
+        raw_timings = serializer.validated_data.get("resolved_raw_timings")
 
         try:
             outcome = authenticate_user(
                 username=username,
-                password=password,
+                user_id=user_id,
+                vector=vector,
                 features=features,
                 raw_timings=raw_timings,
             )
-        except InvalidCredentialsError:
+        except UserNotFoundError as exc:
             return Response(
-                {
-                    "decision": "INVALID_CREDENTIALS",
-                    "message": "Credenciais inválidas.",
-                },
-                status=status.HTTP_401_UNAUTHORIZED,
+                {"message": str(exc)},
+                status=status.HTTP_404_NOT_FOUND,
             )
         except NotEnrolledError as exc:
             return Response(
@@ -206,7 +174,9 @@ class AuthenticateView(APIView):
                 "meanHoldTimeMs": outcome.mean_hold_time_ms,
                 "userAverageHoldTimeMs": outcome.user_average_hold_time_ms,
                 "attemptAverageHoldTimeMs": outcome.mean_hold_time_ms,
+                "modelId": outcome.model_id,
                 "modelVersion": outcome.model_version,
+                "shouldRecordForRetraining": outcome.should_record_for_retraining,
                 "message": outcome.message,
             },
             status=status.HTTP_200_OK,

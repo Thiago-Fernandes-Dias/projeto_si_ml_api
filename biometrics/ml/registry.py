@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import json
 import logging
 from functools import lru_cache
 from pathlib import Path
@@ -8,12 +9,12 @@ from typing import Any
 import joblib
 import sklearn
 from django.conf import settings
-from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import Max
+from django.utils import timezone
 
 from biometrics.ml.training import TrainingResult
-from biometrics.models import TrainedModel, TrainingTrigger
+from biometrics.models import ModeloBiometrico, TrainingTrigger, Usuario
 
 logger = logging.getLogger(__name__)
 
@@ -31,37 +32,53 @@ def _compute_sha256(file_path: Path) -> str:
 
 
 def save_model(
-    user: User,
+    user: Usuario,
     result: TrainingResult,
     trigger: TrainingTrigger | str = TrainingTrigger.ENROLLMENT,
-) -> TrainedModel:
+) -> ModeloBiometrico:
     models_root = Path(settings.BIOMETRICS["MODELS_DIR"])
     user_dir = models_root / str(user.id)
     user_dir.mkdir(parents=True, exist_ok=True)
 
     with transaction.atomic():
         max_version = (
-            TrainedModel.objects.select_for_update()
-            .filter(user=user)
-            .aggregate(max_v=Max("version"))["max_v"]
+            ModeloBiometrico.objects.select_for_update()
+            .filter(usuario=user)
+            .aggregate(max_v=Max("versao"))["max_v"]
             or 0
         )
         next_version = int(max_version) + 1
-        model_path = user_dir / f"v{next_version}.joblib"
+        staging_path = user_dir / f".v{next_version}.tmp.joblib"
+        joblib.dump(result.model, staging_path)
+        digest = _compute_sha256(staging_path)
 
-        joblib.dump(result.model, model_path)
-        digest = _compute_sha256(model_path)
+        model_path = user_dir / f"v{next_version}_{digest}.joblib"
+        staging_path.replace(model_path)
 
-        TrainedModel.objects.filter(user=user, is_active=True).update(is_active=False)
-        trained_model = TrainedModel.objects.create(
-            user=user,
-            version=next_version,
-            file_path=str(model_path),
-            sha256=digest,
-            sklearn_version=sklearn.__version__,
-            trigger=str(trigger),
-            training_stats=result.stats,
-            is_active=True,
+        meta_path = Path(f"{model_path}.meta.json")
+        meta_payload = {
+            "sha256": digest,
+            "sklearn_version": sklearn.__version__,
+            "trigger": str(trigger),
+            "training_stats": result.stats,
+        }
+        meta_path.write_text(json.dumps(meta_payload, indent=2), encoding="utf-8")
+
+        algorithm_name = str(
+            result.stats.get("algorithm", "M2005_Pisani2024_Sliding_Dynamic")
+        )[:50]
+
+        trained_model = ModeloBiometrico.objects.create(
+            usuario=user,
+            versao=next_version,
+            algoritmo=algorithm_name,
+            caminho_arquivo=str(model_path),
+            criado_em=timezone.now(),
+        )
+        active_file = user_dir / "active_version.json"
+        active_file.write_text(
+            json.dumps({"active_version": next_version}, indent=2),
+            encoding="utf-8",
         )
 
     return trained_model
@@ -79,13 +96,13 @@ def _load_model_cached(
         raise ModelIntegrityError(f"Arquivo de modelo #{model_id} não encontrado em '{file_path}'.")
 
     actual_sha256 = _compute_sha256(file_path)
-    if not hmac.compare_digest(actual_sha256, expected_sha256):
+    if not expected_sha256 or not hmac.compare_digest(actual_sha256, expected_sha256):
         raise ModelIntegrityError(
             f"Falha na verificação de integridade SHA-256 para o modelo #{model_id}."
         )
 
     current_sklearn_version = sklearn.__version__
-    if saved_sklearn_version != current_sklearn_version:
+    if saved_sklearn_version and saved_sklearn_version != current_sklearn_version:
         logger.warning(
             "Modelo #%s foi salvo com scikit-learn %s, mas a versão instalada é %s.",
             model_id,
@@ -96,11 +113,11 @@ def _load_model_cached(
     return joblib.load(file_path)
 
 
-def load_model(trained_model: TrainedModel) -> Any:
+def load_model(trained_model: ModeloBiometrico) -> Any:
     return _load_model_cached(
         int(trained_model.id),
         str(trained_model.sha256),
-        str(trained_model.file_path),
+        str(trained_model.caminho_arquivo),
         str(trained_model.sklearn_version),
     )
 

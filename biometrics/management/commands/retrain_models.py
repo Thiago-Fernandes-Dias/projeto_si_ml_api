@@ -1,10 +1,9 @@
 from typing import Any
 
-from django.contrib.auth.models import User
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 
-from biometrics.models import TrainingTrigger
-from biometrics.services import retrain_due_users, retrain_user
+from biometrics.models import TrainingTrigger, Usuario
+from biometrics.services import normalize_username, retrain_due_users, retrain_user
 
 
 class Command(BaseCommand):
@@ -29,7 +28,8 @@ class Command(BaseCommand):
         force: bool = bool(options.get("force"))
 
         if username:
-            user = User.objects.filter(username=username).first()
+            clean = normalize_username(username)
+            user = Usuario.objects.filter(nome__iexact=clean).first()
             if user is None:
                 raise CommandError(f"Usuário '{username}' não encontrado.")
             trained = retrain_user(
@@ -45,7 +45,9 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.WARNING(msg))
             else:
                 self.stdout.write(
-                    self.style.SUCCESS(f"Modelo retreinado para '{username}': v{trained.version}.")
+                    self.style.SUCCESS(
+                        f"Modelo retreinado para '{user.nome}': v{trained.versao}."
+                    )
                 )
             return
 
