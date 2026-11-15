@@ -2,15 +2,15 @@
 
 API RESTful desenvolvida em **Python 3.12**, **Django 5.2 LTS**, **Django REST Framework** e **scikit-learn** para autenticação biométrica comportamental baseada em dinâmica de digitação (*Keystroke Dynamics*).
 
-## Algoritmo Biométrico: `M2005_Pisani2024_Sliding_Dynamic`
+## Algoritmo Biométrico: `M2005_IDB`
 
-A API utiliza o classificador estatístico adaptativo **`M2005_Pisani2024_Sliding_Dynamic`** (`M2005Alg(window_strategy="sliding", window_size=50, threshold_method="min_non_outlier", dynamic_threshold=True)` — Magalhães et al., 2005; Pisani, SBSeg 2024), selecionado pelo seu equilíbrio superior entre FRR e FAR no cenário de janela deslizante (`projeto_si_experimentos/results/exp_metric_averages.csv`):
+A API utiliza o classificador estatístico adaptativo **`M2005_IDB`** (`AdaptiveM2005Alg(threshold=0.7, variant="idb", window_size=50)` — *Improved Double Parallel*, Pisani et al., IJCNN 2015), mantendo compatibilidade retroativa com `M2005Alg` (`M2005_Pisani2024_Sliding_Dynamic`). O `M2005_IDB` foi selecionado por liderar os 52 experimentos do `projeto_si_experimentos` (`results/exp_metric_averages.csv`) em BACC médio (`0.8445`), G-mean (`0.8400`) e equilíbrio entre FRR e FAR:
 
-- **Janela Deslizante (`window_strategy="sliding"`):** Atualiza média, mediana e desvio-padrão por dígrafo sobre as `50` amostras genuínas mais recentes do usuário.
-- **Limiar Dinâmico sem Outliers (`threshold_method="min_non_outlier"`, `dynamic_threshold=True`):** Recalibra o limiar individual filtrando outliers abaixo de $\mu_S - 2.5\sigma_S$, reduzindo falsas rejeições (FRR) conforme o usuário ganha fluência.
-- **Desempenho Experimental em Janela Deslizante (`projeto_si_experimentos`):**
-  - **CMU (`DSL-StrongPasswordData.csv`):** `BACC = 0.8619`, com **FRR de apenas `7.82%`** (3× menor que `SelfDet_Sliding`) e **FAR de `19.80%`** (caindo de `27.47%` na 1ª metade para **`12.57%`** na 2ª metade do fluxo).
-  - **Keyrecs:** `BACC = 0.7187`, com **FRR de apenas `5.49%`** (6× menor que `SelfDet_Sliding`, caindo de `5.61%` para `5.40%` ao longo do tempo).
+- **Submodelo Deslizante (`window_size=50`):** Mantém média, mediana e desvio-padrão por dígrafo sobre as `50` amostras genuínas mais recentes, capturando a evolução recente do usuário.
+- **Submodelo Crescente Incremental (Welford $O(1)$):** Acumula média e desvio-padrão online sobre **todo** o histórico genuíno do usuário desde o cadastro (preservado incrementalmente no retreinamento), impedindo deriva ou esquecimento catastrófico.
+- **Decisão e Desempenho Experimental (`projeto_si_experimentos`):** Score final dado pela média aritmética dos submodelos deslizante e crescente (`threshold = 0.7`):
+  - **CMU (`DSL-StrongPasswordData.csv`):** `BACC = 0.8909`, **FRR = `15.24%`** e **FAR = `6.58%`** (3× menor que os `18.98%` do `M2005_Pisani2024_Sliding_Dynamic`).
+  - **Keyrecs:** `BACC = 0.7980`, **FRR = `9.03%`** e **FAR = `31.37%`** (`+7.61 p.p.` de BACC e `-18.96 p.p.` de FAR frente ao `M2005_Pisani2024_Sliding_Dynamic`).
 
 ---
 
