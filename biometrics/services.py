@@ -13,15 +13,13 @@ from django.db import models, transaction
 from biometrics.logging_utils import log_structured
 from biometrics.ml.features import (
     FeatureValidationError,
-    build_schema,
-    features_to_positional_vector,
     mean_hold_time_ms,
     positional_schema,
     validate_vector,
 )
 from biometrics.ml.inference import classify
 from biometrics.ml.m2005 import AdaptiveM2005Alg
-from biometrics.ml.registry import load_model, save_model
+from biometrics.ml.registry import load_model, save_model, write_text_atomic
 from biometrics.ml.training import adapt_user_model, get_m2005_config, train_user_model
 from biometrics.models import (
     Amostra,
@@ -152,65 +150,9 @@ def get_active_model(user: User) -> ModeloBiometrico | None:
     return first_model
 
 
-def _extract_vectors_from_payload_samples(
-    samples: Sequence[Any],
-) -> tuple[list[np.ndarray], list[float], list[str] | None]:
-    extracted_vectors: list[np.ndarray] = []
-    durations_ms: list[float] = []
-    feature_dicts: list[Mapping[str, float]] = []
-
-    for idx, item in enumerate(samples, start=1):
-        if isinstance(item, Sequence) and not isinstance(item, str | bytes | Mapping):
-            vec = validate_vector(item)
-            extracted_vectors.append(vec)
-            durations_ms.append(float(np.sum(vec[0::3]) * 1000.0))
-            continue
-
-        if not isinstance(item, Mapping):
-            raise EnrollmentValidationError(f"Amostra #{idx} tem formato inválido.")
-
-        duration = float(item.get("totalDurationMs", item.get("duracao_total_ms", 0.0)) or 0.0)
-
-        if "vector" in item or "vetor" in item:
-            raw_vec = item.get("vector", item.get("vetor"))
-            vec = validate_vector(raw_vec)
-            extracted_vectors.append(vec)
-            durations_ms.append(duration or float(np.sum(vec[0::3]) * 1000.0))
-        elif "features" in item and isinstance(item["features"], Mapping):
-            feature_dicts.append(item["features"])
-            durations_ms.append(duration)
-        else:
-            feature_dicts.append(item)
-            durations_ms.append(duration)
-
-    dict_schema: list[str] | None = None
-    if feature_dicts:
-        if extracted_vectors:
-            raise EnrollmentValidationError(
-                "Não é permitido misturar amostras por 'features' e por 'vector' no mesmo lote."
-            )
-        dict_schema = build_schema(feature_dicts)
-        for feat in feature_dicts:
-            vec = features_to_positional_vector(feat, schema=dict_schema)
-            extracted_vectors.append(vec)
-
-    if not extracted_vectors:
-        raise EnrollmentValidationError("Nenhum vetor biométrico válido encontrado nas amostras.")
-
-    first_len = len(extracted_vectors[0])
-    for idx, vec in enumerate(extracted_vectors[1:], start=2):
-        if len(vec) != first_len:
-            raise EnrollmentValidationError(
-                f"Amostra #{idx} possui dimensão {len(vec)}, diferente da amostra #1 ({first_len})."
-            )
-
-    return extracted_vectors, durations_ms, dict_schema
-
-
 def enroll_user(
     username: str | None = None,
-    samples: Sequence[Any] | None = None,
-    samples_count: int | None = None,
+    vectors: Sequence[Any] | None = None,
     user_id: str | uuid.UUID | None = None,
 ) -> ModeloBiometrico:
     user = _resolve_user(username=username, user_id=user_id)
@@ -225,48 +167,28 @@ def enroll_user(
 
     expected_count = int(settings.BIOMETRICS["ENROLLMENT_SAMPLES"])
 
-    if samples is None or len(samples) == 0:
-        db_samples = list(
-            Amostra.objects.filter(
-                usuario=user,
-                origem=OrigemAmostra.CADASTRO,
-                coletada_em__gte=user.data_mudanca_senha,
-            ).order_by("repeticao", "id")[:expected_count]
+    received_count = 0
+    if isinstance(vectors, Sequence) and not isinstance(vectors, str | bytes | Mapping):
+        received_count = len(vectors)
+
+    if received_count != expected_count:
+        raise EnrollmentValidationError(
+            f"O enrollment exige exatamente {expected_count} vetores (recebido: {received_count})."
         )
-        if len(db_samples) != expected_count:
-            raise EnrollmentValidationError(
-                f"O enrollment exige exatamente {expected_count} amostras de 'Cadastro' "
-                f"(encontradas no banco: {len(db_samples)})."
-            )
-        try:
-            vectors = [validate_vector(s.vetor) for s in db_samples]
-        except FeatureValidationError as exc:
-            raise EnrollmentValidationError(str(exc)) from exc
 
-        first_len = len(vectors[0])
-        for idx, vec in enumerate(vectors[1:], start=2):
-            if len(vec) != first_len:
-                raise EnrollmentValidationError(
-                    f"Amostra de cadastro #{idx} no banco possui tamanho {len(vec)} != {first_len}."
-                )
-        dict_schema = None
-    else:
-        actual_len = len(samples) if isinstance(samples, Sequence) else 0
-        if not isinstance(samples, Sequence) or actual_len != expected_count:
-            raise EnrollmentValidationError(
-                f"O enrollment exige exatamente {expected_count} amostras (recebido: {actual_len})."
-            )
-        if samples_count is not None and int(samples_count) != len(samples):
-            raise EnrollmentValidationError(
-                f"Inconsistência entre samplesCount ({samples_count}) "
-                f"e o tamanho de samples ({len(samples)})."
-            )
-        try:
-            vectors, _, dict_schema = _extract_vectors_from_payload_samples(samples)
-        except FeatureValidationError as exc:
-            raise EnrollmentValidationError(str(exc)) from exc
+    try:
+        validated_vectors = [validate_vector(vector) for vector in vectors]
+    except FeatureValidationError as exc:
+        raise EnrollmentValidationError(str(exc)) from exc
 
-    genuine_matrix = np.vstack(vectors)
+    first_len = len(validated_vectors[0])
+    for idx, vector in enumerate(validated_vectors[1:], start=2):
+        if len(vector) != first_len:
+            raise EnrollmentValidationError(
+                f"Vetor #{idx} possui dimensão {len(vector)}, diferente do vetor #1 ({first_len})."
+            )
+
+    genuine_matrix = np.vstack(validated_vectors)
     pos_schema = positional_schema(genuine_matrix.shape[1])
 
     log_structured(
@@ -279,16 +201,13 @@ def enroll_user(
         username=user.nome,
         sampleCount=int(genuine_matrix.shape[0]),
         vectorDimension=int(genuine_matrix.shape[1]),
-        inputSource="database" if (samples is None or len(samples) == 0) else "payload",
-        hasDictSchema=dict_schema is not None,
+        inputSource="backend_vectors",
     )
 
     training_result = train_user_model(
         genuine=genuine_matrix,
         schema=pos_schema,
     )
-    if dict_schema is not None:
-        training_result.model.source_feature_keys_ = dict_schema  # type: ignore[attr-defined]
 
     with transaction.atomic():
         locked_user = User.objects.select_for_update().get(id=user.id)
@@ -341,7 +260,6 @@ def label_for(
 
 def authenticate_user(
     username: str | None = None,
-    features: Mapping[str, float] | None = None,
     vector: Sequence[float] | None = None,
     user_id: str | uuid.UUID | None = None,
 ) -> AuthenticationOutcome:
@@ -358,15 +276,10 @@ def authenticate_user(
     estimator = load_model(active_model)
     expected_dim = len(getattr(estimator, "feature_names_", []))
 
-    if vector is not None:
-        pos_vector = validate_vector(vector)
-    elif features is not None:
-        source_keys = getattr(estimator, "source_feature_keys_", None)
-        pos_vector = features_to_positional_vector(features, schema=source_keys)
-    else:
-        raise FeatureValidationError(
-            "Nenhuma amostra biométrica (vector ou features) informada."
-        )
+    if vector is None:
+        raise FeatureValidationError("Nenhum vetor biométrico informado.")
+
+    pos_vector = validate_vector(vector)
 
     if expected_dim > 0 and len(pos_vector) != expected_dim:
         raise FeatureValidationError(
@@ -385,7 +298,7 @@ def authenticate_user(
         modelId=int(active_model.id),
         modelVersion=int(active_model.versao),
         algorithm=active_model.algoritmo,
-        inputType="vector" if vector is not None else "features",
+        inputType="vector",
         vectorDimension=int(len(pos_vector)),
         threshold=round(threshold, 4),
     )
@@ -461,16 +374,18 @@ def retrain_user(
         ).exists():
             return None
 
-        base_threshold = float(settings.BIOMETRICS["DECISION_THRESHOLD"])
+        retrain_threshold = float(settings.BIOMETRICS["DECISION_THRESHOLD"])
         prev_estimator: Any = None
         if active_model is not None:
             try:
                 prev_estimator = load_model(active_model)
-                base_threshold = float(getattr(prev_estimator, "threshold", base_threshold))
+                retrain_threshold = float(
+                    getattr(prev_estimator, "threshold", retrain_threshold)
+                )
             except Exception:
                 prev_estimator = None
         margin = float(settings.BIOMETRICS["LABEL_CONFIDENCE_MARGIN"])
-        genuine_min_conf = base_threshold + margin
+        genuine_min_conf = retrain_threshold + margin
 
         new_logins_qs = Amostra.objects.filter(
             usuario=locked_user,
@@ -628,9 +543,9 @@ def activate_model_version(username: str, version: int) -> ModeloBiometrico:
     if target.caminho_arquivo:
         active_file = Path(target.caminho_arquivo).parent / "active_version.json"
         active_file.parent.mkdir(parents=True, exist_ok=True)
-        active_file.write_text(
+        write_text_atomic(
+            active_file,
             json.dumps({"active_version": int(version)}, indent=2),
-            encoding="utf-8",
         )
 
     return target

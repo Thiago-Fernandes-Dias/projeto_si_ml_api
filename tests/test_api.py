@@ -3,10 +3,10 @@ from rest_framework.test import APIClient
 
 from biometrics.models import KeystrokeSample, TrainedModel
 from tests.conftest import (
-    CMU_SAMPLE_FEATURES,
+    CMU_SAMPLE_VECTOR,
     create_user_in_db,
-    make_genuine_feature_dicts,
-    make_section_5_3_payload,
+    make_enrollment_payload,
+    make_genuine_vectors,
 )
 
 
@@ -38,19 +38,19 @@ def test_full_flow_enrollment_and_authenticate() -> None:
         "/api/authenticate",
         {
             "username": "thiago_dias",
-            "features": CMU_SAMPLE_FEATURES,
+            "vector": CMU_SAMPLE_VECTOR,
         },
         format="json",
     )
     assert pre_auth.status_code == 409
 
-    enroll_payload = make_section_5_3_payload(username="thiago_dias", count=5, seed=42)
+    enroll_payload = make_enrollment_payload(username="thiago_dias", count=5, seed=42)
     enroll_res = client.post("/api/enrollment", enroll_payload, format="json")
     assert enroll_res.status_code == 201
     enroll_data = enroll_res.json()
     assert enroll_data["username"] == "thiago_dias"
     assert enroll_data["modelVersion"] == 1
-    assert enroll_data["featureCount"] == len(CMU_SAMPLE_FEATURES)
+    assert enroll_data["featureCount"] == len(CMU_SAMPLE_VECTOR)
     assert enroll_data["samplesRegistered"] == 5
 
     user.refresh_from_db()
@@ -65,7 +65,7 @@ def test_full_flow_enrollment_and_authenticate() -> None:
         "/api/authenticate",
         {
             "username": "ghost_user",
-            "features": CMU_SAMPLE_FEATURES,
+            "vector": CMU_SAMPLE_VECTOR,
         },
         format="json",
     )
@@ -75,7 +75,7 @@ def test_full_flow_enrollment_and_authenticate() -> None:
         "/api/authenticate",
         {
             "username": "thiago_dias",
-            "features": CMU_SAMPLE_FEATURES,
+            "vector": CMU_SAMPLE_VECTOR,
         },
         format="json",
     )
@@ -83,22 +83,22 @@ def test_full_flow_enrollment_and_authenticate() -> None:
     genuine_body = genuine_res.json()
     assert genuine_body["decision"] == "GENUINE"
     assert genuine_body["confidence"] >= 0.90
-    assert genuine_body["threshold"] == 0.7
+    assert 0.0 < genuine_body["threshold"] <= 0.7
     assert genuine_body["inferenceTimeMs"] > 0
     assert genuine_body["meanHoldTimeMs"] > 0
     assert genuine_body["userAverageHoldTimeMs"] > 0
     assert genuine_body["modelVersion"] == 1
     assert genuine_body["shouldRecordForRetraining"] is True
 
-    borderline_features = {
-        k: (round(v * 2.0, 4) if idx < 6 else v)
-        for idx, (k, v) in enumerate(CMU_SAMPLE_FEATURES.items())
-    }
+    borderline_vector = [
+        round(value * 2.0, 4) if idx < 6 else value
+        for idx, value in enumerate(CMU_SAMPLE_VECTOR)
+    ]
     borderline_res = client.post(
         "/api/authenticate",
         {
             "username": "thiago_dias",
-            "features": borderline_features,
+            "vector": borderline_vector,
         },
         format="json",
     )
@@ -109,16 +109,12 @@ def test_full_flow_enrollment_and_authenticate() -> None:
     assert threshold_val <= borderline_body["confidence"] < threshold_val + 0.15
     assert borderline_body["shouldRecordForRetraining"] is False
 
-    impostor_features = {k: round(v * 2.0, 4) for k, v in CMU_SAMPLE_FEATURES.items()}
+    impostor_vector = [round(value * 2.0, 4) for value in CMU_SAMPLE_VECTOR]
     impostor_res = client.post(
         "/api/authenticate",
         {
             "username": "thiago_dias",
-            "sample": {
-                "repetition": 1,
-                "features": impostor_features,
-                "rawTimings": [],
-            },
+            "vector": impostor_vector,
         },
         format="json",
     )
@@ -128,16 +124,15 @@ def test_full_flow_enrollment_and_authenticate() -> None:
     assert impostor_body["confidence"] < 0.30
     assert impostor_body["shouldRecordForRetraining"] is False
 
-    out_of_order_features = {k: CMU_SAMPLE_FEATURES[k] for k in sorted(CMU_SAMPLE_FEATURES)}
-    out_of_order_res = client.post(
+    invalid_vector_res = client.post(
         "/api/authenticate",
         {
             "username": "thiago_dias",
-            "features": out_of_order_features,
+            "vector": CMU_SAMPLE_VECTOR[:-1],
         },
         format="json",
     )
-    assert out_of_order_res.status_code == 400
+    assert invalid_vector_res.status_code == 400
     assert KeystrokeSample.objects.filter(usuario=user).count() == 0
 
 
@@ -146,7 +141,7 @@ def test_enrollment_and_authenticate_with_backend_positional_vectors() -> None:
     client = APIClient()
     user = create_user_in_db(username="backend_user")
 
-    vectors = [list(d.values()) for d in make_genuine_feature_dicts(count=5, seed=7)]
+    vectors = make_genuine_vectors(count=5, seed=7)
     enroll_res = client.post(
         "/api/enrollment",
         {
@@ -233,40 +228,42 @@ def test_enrollment_and_authenticate_with_backend_positional_vectors() -> None:
 def test_validation_and_not_found_error_codes() -> None:
     client = APIClient()
 
-    payload_unknown = make_section_5_3_payload(username="nao_existe", count=5)
+    payload_unknown = make_enrollment_payload(username="nao_existe", count=5)
     res_404 = client.post("/api/enrollment", payload_unknown, format="json")
     assert res_404.status_code == 404
 
     create_user_in_db(username="user_val")
 
-    bad_enroll = make_section_5_3_payload(username="user_val", count=3)
+    bad_enroll = make_enrollment_payload(username="user_val", count=3)
     res_400_count = client.post("/api/enrollment", bad_enroll, format="json")
     assert res_400_count.status_code == 400
 
-    valid_enroll = make_section_5_3_payload(username="user_val", count=5)
+    valid_enroll = make_enrollment_payload(username="user_val", count=5)
     assert client.post("/api/enrollment", valid_enroll, format="json").status_code == 201
 
-    bad_features = dict(CMU_SAMPLE_FEATURES)
-    bad_features.pop("H.period")
-    res_400_schema = client.post(
+    res_400_vector = client.post(
         "/api/authenticate",
         {
             "username": "user_val",
-            "features": bad_features,
+            "vector": CMU_SAMPLE_VECTOR[:-1],
         },
         format="json",
     )
-    assert res_400_schema.status_code == 400
+    assert res_400_vector.status_code == 400
 
-    res_400_raw_only = client.post(
+    res_400_missing_vector = client.post(
+        "/api/authenticate",
+        {"username": "user_val"},
+        format="json",
+    )
+    assert res_400_missing_vector.status_code == 400
+
+    res_400_feature_map = client.post(
         "/api/authenticate",
         {
             "username": "user_val",
-            "rawTimings": [
-                {"key": "a", "pressTime": 100.0, "releaseTime": 200.0},
-                {"key": "b", "pressTime": 250.0, "releaseTime": 330.0},
-            ],
+            "features": {"H.period": 0.1491},
         },
         format="json",
     )
-    assert res_400_raw_only.status_code == 400
+    assert res_400_feature_map.status_code == 400

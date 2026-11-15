@@ -81,15 +81,13 @@ class EnrollmentView(APIView):
 
         username = serializer.validated_data.get("username")
         user_id = serializer.validated_data.get("userId")
-        samples = serializer.validated_data.get("samples")
-        samples_count = serializer.validated_data.get("samplesCount")
+        vectors = serializer.validated_data["vectors"]
 
         try:
             trained_model = enroll_user(
                 username=username,
                 user_id=user_id,
-                samples=samples,
-                samples_count=samples_count,
+                vectors=vectors,
             )
         except UserNotFoundError as exc:
             log_structured(
@@ -201,15 +199,13 @@ class AuthenticateView(APIView):
 
         username = serializer.validated_data.get("username")
         user_id = serializer.validated_data.get("userId")
-        vector = serializer.validated_data.get("resolved_vector")
-        features = serializer.validated_data.get("resolved_features")
+        vector = serializer.validated_data["vector"]
 
         try:
             outcome = authenticate_user(
                 username=username,
                 user_id=user_id,
                 vector=vector,
-                features=features,
             )
         except UserNotFoundError as exc:
             log_structured(
@@ -244,7 +240,7 @@ class AuthenticateView(APIView):
                 logger,
                 logging.DEBUG,
                 "ml_api.login.feature_validation_failed",
-                "Vetor ou mapa de features inválido na autenticação.",
+                "Vetor biométrico inválido na autenticação.",
                 flow="login",
                 username=username,
                 reason=str(exc),

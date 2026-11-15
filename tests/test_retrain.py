@@ -3,7 +3,6 @@ from typing import Any
 import pytest
 from django.core.management import call_command
 
-from biometrics.ml.features import features_to_positional_vector
 from biometrics.ml.registry import load_model
 from biometrics.models import Amostra, DecisaoBiometrica, OrigemAmostra, TrainedModel
 from biometrics.services import (
@@ -12,20 +11,12 @@ from biometrics.services import (
     get_active_model,
     retrain_due_users,
 )
-from tests.conftest import CMU_SAMPLE_FEATURES, create_user_in_db, make_genuine_feature_dicts
+from tests.conftest import CMU_SAMPLE_VECTOR, create_user_in_db, make_genuine_vectors
 
 
 def _create_enrolled_user(username: str = "retrain_user") -> Any:
     user = create_user_in_db(username=username)
-    samples = make_genuine_feature_dicts(count=5, seed=101)
-    for rep, feat in enumerate(samples, start=1):
-        Amostra.objects.create(
-            usuario=user,
-            origem=OrigemAmostra.CADASTRO,
-            vetor=features_to_positional_vector(feat).tolist(),
-            repeticao=rep,
-        )
-    enroll_user(username=username)
+    enroll_user(username=username, vectors=make_genuine_vectors(count=5, seed=101))
     return user
 
 
@@ -57,7 +48,7 @@ def test_retrain_respects_genuine_window_excludes_uncertain_and_impostors_and_su
     v1 = get_active_model(user)
     assert v1 is not None
 
-    base_vec = features_to_positional_vector(CMU_SAMPLE_FEATURES).tolist()
+    base_vec = list(CMU_SAMPLE_VECTOR)
 
     for _ in range(4):
         Amostra.objects.create(
@@ -138,11 +129,11 @@ def test_incremental_retrain_preserves_payload_enrollment_and_feature_keys(setti
         },
     }
     user = create_user_in_db(username="payload_user")
-    samples = make_genuine_feature_dicts(count=5, seed=202)
-    v1 = enroll_user(username="payload_user", samples=samples, samples_count=5)
+    vectors = make_genuine_vectors(count=5, seed=202)
+    v1 = enroll_user(username="payload_user", vectors=vectors)
     assert Amostra.objects.filter(usuario=user).count() == 0
 
-    base_vec = features_to_positional_vector(CMU_SAMPLE_FEATURES).tolist()
+    base_vec = list(CMU_SAMPLE_VECTOR)
     for factor in (1.00, 1.01, 0.99):
         Amostra.objects.create(
             usuario=user,
@@ -164,4 +155,4 @@ def test_incremental_retrain_preserves_payload_enrollment_and_feature_keys(setti
     est_v2 = load_model(v2)
     assert len(est_v2._gallery) == 6
     assert est_v2.growing_count == 8
-    assert getattr(est_v2, "source_feature_keys_", None) == list(CMU_SAMPLE_FEATURES.keys())
+    assert len(est_v2.feature_names_) == len(CMU_SAMPLE_VECTOR)

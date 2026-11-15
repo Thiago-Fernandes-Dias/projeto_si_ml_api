@@ -56,46 +56,30 @@ CMU_SAMPLE_FEATURES: dict[str, float] = {
     "H.Return": 0.0742,
 }
 
+CMU_SAMPLE_VECTOR: list[float] = [float(v) for v in CMU_SAMPLE_FEATURES.values()]
 
-def make_genuine_feature_dicts(
+
+def make_genuine_vectors(
     count: int = 5,
     seed: int = 42,
-    base: dict[str, float] | None = None,
-) -> list[dict[str, float]]:
+    base: list[float] | None = None,
+) -> list[list[float]]:
     rng = np.random.default_rng(seed)
-    template = base if base is not None else CMU_SAMPLE_FEATURES
-    samples: list[dict[str, float]] = []
-    for _ in range(count):
-        perturbed: dict[str, float] = {}
-        for key, val in template.items():
-            factor = float(rng.uniform(0.985, 1.015))
-            perturbed[key] = round(val * factor, 4)
-        samples.append(perturbed)
-    return samples
+    template = base if base is not None else CMU_SAMPLE_VECTOR
+    return [
+        [round(float(value) * float(rng.uniform(0.985, 1.015)), 4) for value in template]
+        for _ in range(count)
+    ]
 
 
-def make_section_5_3_payload(
+def make_enrollment_payload(
     username: str = "thiago_dias",
     count: int = 5,
     seed: int = 42,
 ) -> dict[str, Any]:
-    feature_dicts = make_genuine_feature_dicts(count=count, seed=seed)
-    samples = [
-        {
-            "repetition": idx,
-            "features": feat,
-            "rawTimings": [
-                {"key": ".", "pressTime": 1024.12, "releaseTime": 1173.22},
-                {"key": "t", "pressTime": 1422.02, "releaseTime": 1528.92},
-            ],
-        }
-        for idx, feat in enumerate(feature_dicts, start=1)
-    ]
     return {
         "username": username,
-        "passwordLength": 10,
-        "samplesCount": count,
-        "samples": samples,
+        "vectors": make_genuine_vectors(count=count, seed=seed),
     }
 
 

@@ -12,9 +12,9 @@ from biometrics.logging_utils import (
     resolve_debug_logs_enabled,
 )
 from tests.conftest import (
-    CMU_SAMPLE_FEATURES,
+    CMU_SAMPLE_VECTOR,
     create_user_in_db,
-    make_section_5_3_payload,
+    make_enrollment_payload,
 )
 
 
@@ -100,7 +100,7 @@ def test_enrollment_and_authenticate_emit_correlated_debug_logs(
         client = APIClient()
         create_user_in_db(username="maria_log")
 
-        enroll_payload = make_section_5_3_payload(username="maria_log", count=5, seed=9)
+        enroll_payload = make_enrollment_payload(username="maria_log", count=5, seed=9)
         enroll_res = client.post(
             "/api/enrollment",
             enroll_payload,
@@ -112,7 +112,7 @@ def test_enrollment_and_authenticate_emit_correlated_debug_logs(
 
         auth_res = client.post(
             "/api/authenticate",
-            {"username": "maria_log", "features": CMU_SAMPLE_FEATURES},
+            {"username": "maria_log", "vector": CMU_SAMPLE_VECTOR},
             format="json",
             HTTP_X_CORRELATION_ID="corr-login-002",
         )
@@ -150,14 +150,14 @@ def test_production_info_level_suppresses_debug_logs(
 
         enroll_res = client.post(
             "/api/enrollment",
-            make_section_5_3_payload(username="maria_prod", count=5, seed=11),
+            make_enrollment_payload(username="maria_prod", count=5, seed=11),
             format="json",
         )
         assert enroll_res.status_code == 201
 
         auth_res = client.post(
             "/api/authenticate",
-            {"username": "maria_prod", "features": CMU_SAMPLE_FEATURES},
+            {"username": "maria_prod", "vector": CMU_SAMPLE_VECTOR},
             format="json",
         )
         assert auth_res.status_code == 200
