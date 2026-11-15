@@ -14,6 +14,7 @@ from biometrics.ml.registry import ModelIntegrityError, load_model
 from biometrics.serializers import (
     AuthenticateRequestSerializer,
     EnrollmentRequestSerializer,
+    RollbackModelsRequestSerializer,
 )
 from biometrics.services import (
     AlreadyEnrolledError,
@@ -22,6 +23,7 @@ from biometrics.services import (
     UserNotFoundError,
     authenticate_user,
     enroll_user,
+    rollback_models_after,
 )
 
 logger = logging.getLogger(__name__)
@@ -295,6 +297,52 @@ class AuthenticateView(APIView):
                 "modelVersion": outcome.model_version,
                 "shouldRecordForRetraining": outcome.should_record_for_retraining,
                 "message": outcome.message,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ModelsRollbackView(APIView):
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def post(self, request: Request) -> Response:
+        serializer = RollbackModelsRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            log_structured(
+                logger,
+                logging.DEBUG,
+                "ml_api.models.rollback_payload_invalid",
+                "Payload de rollback de modelos rejeitado.",
+                flow="password_change",
+                errorFields=sorted(serializer.errors.keys()),
+            )
+            return Response(
+                {
+                    "success": False,
+                    "message": "Payload de rollback inválido.",
+                    "errors": serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            outcome = rollback_models_after(
+                created_after=serializer.validated_data["createdAfter"],
+                username=serializer.validated_data.get("username"),
+                user_id=serializer.validated_data.get("userId"),
+            )
+        except UserNotFoundError as exc:
+            return Response(
+                {"success": False, "message": str(exc)},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(
+            {
+                "success": True,
+                "deletedCount": outcome.deleted_count,
+                "activeVersion": outcome.active_version,
             },
             status=status.HTTP_200_OK,
         )

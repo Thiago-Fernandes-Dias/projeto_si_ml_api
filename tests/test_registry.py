@@ -1,9 +1,12 @@
+import json
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 from django.db import IntegrityError
+from django.utils import timezone
 
 from biometrics.ml.features import positional_schema
 from biometrics.ml.registry import (
@@ -14,8 +17,13 @@ from biometrics.ml.registry import (
     save_model,
 )
 from biometrics.ml.training import train_user_model
-from biometrics.models import TrainedModel, TrainingTrigger
-from biometrics.services import get_active_model
+from biometrics.models import ModeloBiometrico, TrainedModel, TrainingTrigger, User
+from biometrics.services import (
+    ModelVersionNotFoundError,
+    activate_model_version,
+    get_active_model,
+    rollback_models_after,
+)
 from tests.conftest import create_user_in_db, make_genuine_vectors
 
 
@@ -109,3 +117,63 @@ def test_save_model_rolls_back_artifacts_and_active_version_on_db_failure(
     assert {path.name for path in user_dir.iterdir()} == files_before
     assert active_file.read_text(encoding="utf-8") == previous_active
     assert TrainedModel.objects.filter(usuario=user).count() == 1
+
+
+@pytest.mark.django_db
+def test_get_active_model_ignores_models_created_before_password_change() -> None:
+    user = create_user_in_db(username="eve")
+    ModeloBiometrico.objects.create(
+        usuario=user,
+        versao=1,
+        algoritmo="M2005_IDB",
+        caminho_arquivo="old-model.joblib",
+        criado_em=user.data_mudanca_senha - timedelta(days=1),
+    )
+
+    assert get_active_model(user) is None
+
+    current = save_model(user, _build_training_result(), trigger=TrainingTrigger.ENROLLMENT)
+    assert current.versao == 2
+    active = get_active_model(user)
+    assert active is not None
+    assert active.id == current.id
+
+    with pytest.raises(ModelVersionNotFoundError):
+        activate_model_version("eve", 1)
+
+
+@pytest.mark.django_db
+def test_rollback_models_after_removes_new_versions_and_restores_active_version() -> None:
+    user = create_user_in_db(username="frank")
+    old_date = timezone.now() - timedelta(days=2)
+    User.objects.filter(pk=user.pk).update(data_mudanca_senha=old_date)
+    user.refresh_from_db()
+
+    first = save_model(user, _build_training_result(), trigger=TrainingTrigger.ENROLLMENT)
+    second = save_model(user, _build_training_result(), trigger=TrainingTrigger.ENROLLMENT)
+
+    first_date = timezone.now() - timedelta(days=1)
+    second_date = timezone.now() + timedelta(minutes=1)
+    ModeloBiometrico.objects.filter(pk=first.pk).update(criado_em=first_date)
+    ModeloBiometrico.objects.filter(pk=second.pk).update(criado_em=second_date)
+
+    first_path = Path(first.file_path)
+    second_path = Path(second.file_path)
+
+    outcome = rollback_models_after(
+        created_after=first_date + timedelta(hours=1),
+        username="frank",
+    )
+
+    assert outcome.deleted_count == 1
+    assert outcome.active_version == 1
+    assert not second_path.exists()
+    assert not Path(f"{second_path}.meta.json").exists()
+    assert first_path.exists()
+
+    active = get_active_model(user)
+    assert active is not None
+    assert active.id == first.id
+
+    active_file = first_path.parent / "active_version.json"
+    assert json.loads(active_file.read_text(encoding="utf-8"))["active_version"] == 1

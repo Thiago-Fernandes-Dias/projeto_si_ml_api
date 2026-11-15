@@ -3,6 +3,7 @@ import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ from biometrics.ml.features import (
 )
 from biometrics.ml.inference import classify
 from biometrics.ml.m2005 import AdaptiveM2005Alg
-from biometrics.ml.registry import load_model, save_model, write_text_atomic
+from biometrics.ml.registry import clear_model_cache, load_model, save_model, write_text_atomic
 from biometrics.ml.training import adapt_user_model, get_m2005_config, train_user_model
 from biometrics.models import (
     Amostra,
@@ -52,6 +53,12 @@ class EnrollmentValidationError(ValueError):
 
 class ModelVersionNotFoundError(Exception):
     """Raised when a requested model version does not exist for the user."""
+
+
+@dataclass(frozen=True)
+class ModelRollbackOutcome:
+    deleted_count: int
+    active_version: int | None
 
 
 @dataclass(frozen=True)
@@ -126,10 +133,6 @@ def get_active_model(user: User) -> ModeloBiometrico | None:
     ).order_by("-versao", "-id")
     first_model = models_qs.first()
     if first_model is None:
-        first_model = (
-            ModeloBiometrico.objects.filter(usuario=user).order_by("-versao", "-id").first()
-        )
-    if first_model is None:
         return None
 
     if first_model.caminho_arquivo:
@@ -139,10 +142,7 @@ def get_active_model(user: User) -> ModeloBiometrico | None:
                 data = json.loads(active_file.read_text(encoding="utf-8"))
                 active_v = data.get("active_version")
                 if isinstance(active_v, int):
-                    chosen = ModeloBiometrico.objects.filter(
-                        usuario=user,
-                        versao=active_v,
-                    ).first()
+                    chosen = models_qs.filter(versao=active_v).first()
                     if chosen is not None:
                         return chosen
             except Exception:
@@ -527,12 +527,82 @@ def retrain_due_users(now: Any = None, force: bool = False) -> list[ModeloBiomet
     return retrained
 
 
+def rollback_models_after(
+    created_after: datetime,
+    username: str | None = None,
+    user_id: str | uuid.UUID | None = None,
+) -> ModelRollbackOutcome:
+    """Removes model versions created after a password change timestamp."""
+    user = _resolve_user(username=username, user_id=user_id)
+    if user is None:
+        raise UserNotFoundError(f"Usuário '{username or user_id}' não encontrado.")
+
+    models = list(
+        ModeloBiometrico.objects.filter(
+            usuario=user,
+            criado_em__gte=created_after,
+        )
+    )
+    paths = [Path(model.caminho_arquivo) for model in models if model.caminho_arquivo]
+
+    with transaction.atomic():
+        for model in models:
+            model.delete()
+
+        remaining = (
+            ModeloBiometrico.objects.filter(usuario=user)
+            .order_by("-versao", "-id")
+            .first()
+        )
+        if remaining is not None and remaining.caminho_arquivo:
+            active_file = Path(remaining.caminho_arquivo).parent / "active_version.json"
+        else:
+            models_root = Path(settings.BIOMETRICS["MODELS_DIR"])
+            active_file = models_root / str(user.id) / "active_version.json"
+
+        if remaining is not None:
+            write_text_atomic(
+                active_file,
+                json.dumps({"active_version": int(remaining.versao)}, indent=2),
+            )
+        else:
+            active_file.unlink(missing_ok=True)
+
+    clear_model_cache()
+
+    for path in paths:
+        for candidate in (path, Path(f"{path}.meta.json")):
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Não foi possível remover artefato de modelo '%s'.", candidate)
+
+    active_version = int(remaining.versao) if remaining is not None else None
+    log_structured(
+        logger,
+        logging.DEBUG,
+        "ml_api.models.rolled_back",
+        "Modelos posteriores à troca de senha removidos.",
+        flow="password_change",
+        userId=str(user.id),
+        username=user.nome,
+        createdAfter=created_after.isoformat(),
+        deletedCount=len(models),
+        activeVersion=active_version,
+    )
+    return ModelRollbackOutcome(deleted_count=len(models), active_version=active_version)
+
+
 def activate_model_version(username: str, version: int) -> ModeloBiometrico:
     user = _resolve_user(username=username)
     if user is None:
         raise UserNotFoundError(f"Usuário '{username}' não encontrado.")
 
-    target = ModeloBiometrico.objects.filter(usuario=user, versao=version).first()
+    target = ModeloBiometrico.objects.filter(
+        usuario=user,
+        versao=version,
+        criado_em__gte=user.data_mudanca_senha,
+    ).first()
     if target is None:
         raise ModelVersionNotFoundError(
             f"Versão v{version} não encontrada para o usuário '{user.nome}'."

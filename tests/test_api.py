@@ -267,3 +267,34 @@ def test_validation_and_not_found_error_codes() -> None:
         format="json",
     )
     assert res_400_feature_map.status_code == 400
+
+
+@pytest.mark.django_db
+def test_models_rollback_endpoint_accepts_timestamp_and_returns_active_version() -> None:
+    from django.utils import timezone
+
+    client = APIClient()
+    create_user_in_db(username="rollback_user")
+
+    response = client.post(
+        "/api/models/rollback",
+        {
+            "username": "rollback_user",
+            "createdAfter": timezone.now().isoformat(),
+        },
+        format="json",
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "deletedCount": 0,
+        "activeVersion": None,
+    }
+
+    missing_user = client.post(
+        "/api/models/rollback",
+        {"createdAfter": timezone.now().isoformat()},
+        format="json",
+    )
+    assert missing_user.status_code == 400

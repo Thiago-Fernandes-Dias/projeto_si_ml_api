@@ -1,10 +1,12 @@
+from datetime import timedelta
 from typing import Any
 
 import pytest
 from django.core.management import call_command
+from django.utils import timezone
 
 from biometrics.ml.registry import load_model
-from biometrics.models import Amostra, DecisaoBiometrica, OrigemAmostra, TrainedModel
+from biometrics.models import Amostra, DecisaoBiometrica, OrigemAmostra, TrainedModel, User
 from biometrics.services import (
     activate_model_version,
     enroll_user,
@@ -156,3 +158,18 @@ def test_incremental_retrain_preserves_payload_enrollment_and_feature_keys(setti
     assert len(est_v2._gallery) == 6
     assert est_v2.growing_count == 8
     assert len(est_v2.feature_names_) == len(CMU_SAMPLE_VECTOR)
+
+
+@pytest.mark.django_db
+def test_retrain_ignores_old_model_after_password_change_without_new_samples() -> None:
+    user = _create_enrolled_user("password_changed")
+    old_model = get_active_model(user)
+    assert old_model is not None
+
+    User.objects.filter(pk=user.pk).update(
+        data_mudanca_senha=timezone.now() + timedelta(minutes=1)
+    )
+    user.refresh_from_db()
+
+    assert get_active_model(user) is None
+    assert retrain_due_users(force=True) == []

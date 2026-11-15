@@ -33,3 +33,16 @@ class AuthenticateRequestSerializer(serializers.Serializer):
                 {"username": "Informe 'username' ou 'userId'."}
             )
         return attrs
+
+
+class RollbackModelsRequestSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=50, required=False, trim_whitespace=True)
+    userId = serializers.UUIDField(required=False)
+    createdAfter = serializers.DateTimeField()
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        if not attrs.get("username") and not attrs.get("userId"):
+            raise serializers.ValidationError(
+                {"username": "Informe 'username' ou 'userId'."}
+            )
+        return attrs
