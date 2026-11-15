@@ -14,7 +14,7 @@ from django.db.models import Max
 from django.utils import timezone
 
 from biometrics.ml.training import TrainingResult
-from biometrics.models import ModeloBiometrico, TrainingTrigger, Usuario
+from biometrics.models import ModeloBiometrico, TrainingTrigger, User
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ def _compute_sha256(file_path: Path) -> str:
 
 
 def save_model(
-    user: Usuario,
+    user: User,
     result: TrainingResult,
     trigger: TrainingTrigger | str = TrainingTrigger.ENROLLMENT,
 ) -> ModeloBiometrico:

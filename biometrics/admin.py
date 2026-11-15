@@ -1,9 +1,9 @@
 from django.contrib import admin
 
-from biometrics.models import Amostra, ModeloBiometrico, Usuario
+from biometrics.models import Amostra, ModeloBiometrico, User
 
 
-@admin.register(Usuario)
+@admin.register(User)
 class UsuarioAdmin(admin.ModelAdmin):
     list_display = (
         "id",

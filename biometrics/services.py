@@ -28,7 +28,7 @@ from biometrics.models import (
     OrigemAmostra,
     SampleLabel,
     TrainingTrigger,
-    Usuario,
+    User,
 )
 
 
@@ -71,14 +71,14 @@ def normalize_username(username: str) -> str:
     return (username or "").strip().lower()
 
 
-def _resolve_usuario(
+def _resolve_user(
     username: str | None = None,
     user_id: str | uuid.UUID | None = None,
-) -> Usuario | None:
+) -> User | None:
     if user_id is not None:
         try:
             uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
-            found = Usuario.objects.filter(id=uid).first()
+            found = User.objects.filter(id=uid).first()
             if found is not None:
                 return found
         except (ValueError, TypeError):
@@ -86,11 +86,11 @@ def _resolve_usuario(
 
     if username:
         clean = normalize_username(username)
-        return Usuario.objects.filter(nome__iexact=clean).first()
+        return User.objects.filter(nome__iexact=clean).first()
     return None
 
 
-def get_active_model(user: Usuario) -> ModeloBiometrico | None:
+def get_active_model(user: User) -> ModeloBiometrico | None:
     models_qs = ModeloBiometrico.objects.filter(
         usuario=user,
         criado_em__gte=user.data_mudanca_senha,
@@ -187,7 +187,7 @@ def enroll_user(
     samples_count: int | None = None,
     user_id: str | uuid.UUID | None = None,
 ) -> ModeloBiometrico:
-    user = _resolve_usuario(username=username, user_id=user_id)
+    user = _resolve_user(username=username, user_id=user_id)
     if user is None:
         raise UserNotFoundError(f"Usuário '{username or user_id}' não encontrado.")
 
@@ -251,7 +251,7 @@ def enroll_user(
         training_result.model.source_feature_keys_ = dict_schema  # type: ignore[attr-defined]
 
     with transaction.atomic():
-        locked_user = Usuario.objects.select_for_update().get(id=user.id)
+        locked_user = User.objects.select_for_update().get(id=user.id)
         if ModeloBiometrico.objects.filter(
             usuario=locked_user,
             criado_em__gte=locked_user.data_mudanca_senha,
@@ -293,7 +293,7 @@ def authenticate_user(
     vector: Sequence[float] | None = None,
     user_id: str | uuid.UUID | None = None,
 ) -> AuthenticationOutcome:
-    user = _resolve_usuario(username=username, user_id=user_id)
+    user = _resolve_user(username=username, user_id=user_id)
     if user is None:
         raise UserNotFoundError(f"Usuário '{username or user_id}' não encontrado.")
 
@@ -360,13 +360,13 @@ def authenticate_user(
 
 
 def retrain_user(
-    user: Usuario,
+    user: User,
     trigger: TrainingTrigger | str = TrainingTrigger.SCHEDULED,
     force: bool = False,
 ) -> ModeloBiometrico | None:
     with transaction.atomic():
         locked_user = (
-            Usuario.objects.select_for_update(skip_locked=True)
+            User.objects.select_for_update(skip_locked=True)
             .filter(id=user.id)
             .first()
         )
@@ -455,7 +455,7 @@ def retrain_user(
 
 def retrain_due_users(now: Any = None, force: bool = False) -> list[ModeloBiometrico]:
     retrained: list[ModeloBiometrico] = []
-    users = Usuario.objects.filter(
+    users = User.objects.filter(
         models.Q(biometria_cadastrada_em__isnull=False) | models.Q(modelos__isnull=False)
     ).distinct().order_by("criado_em", "id")
 
@@ -471,7 +471,7 @@ def retrain_due_users(now: Any = None, force: bool = False) -> list[ModeloBiomet
 
 
 def activate_model_version(username: str, version: int) -> ModeloBiometrico:
-    user = _resolve_usuario(username=username)
+    user = _resolve_user(username=username)
     if user is None:
         raise UserNotFoundError(f"Usuário '{username}' não encontrado.")
 

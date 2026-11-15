@@ -79,7 +79,7 @@ class TrainingTrigger(models.TextChoices):
     MANUAL = "MANUAL", "Manual"
 
 
-class Usuario(models.Model):
+class User(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     nome = models.CharField(max_length=50, unique=True)
     data_mudanca_senha = models.DateTimeField(default=timezone.now)
@@ -106,7 +106,7 @@ class Usuario(models.Model):
 class ModeloBiometrico(models.Model):
     id = models.BigAutoField(primary_key=True)
     usuario = models.ForeignKey(
-        Usuario,
+        User,
         db_column="usuario_id",
         on_delete=models.CASCADE,
         related_name="modelos",
@@ -133,7 +133,7 @@ class ModeloBiometrico(models.Model):
         return f"ModeloBiometrico({self.usuario.nome}, v{self.versao}, {self.algoritmo})"
 
     @property
-    def user(self) -> Usuario:
+    def user(self) -> User:
         return self.usuario
 
     @property
@@ -247,7 +247,7 @@ class ModeloBiometrico(models.Model):
 class Amostra(models.Model):
     id = models.BigAutoField(primary_key=True)
     usuario = models.ForeignKey(
-        Usuario,
+        User,
         db_column="usuario_id",
         on_delete=models.CASCADE,
         related_name="amostras",

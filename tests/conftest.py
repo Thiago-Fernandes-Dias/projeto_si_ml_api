@@ -7,12 +7,12 @@ import pytest
 from django.utils import timezone
 
 from biometrics.ml.registry import clear_model_cache
-from biometrics.models import Usuario
+from biometrics.models import User
 
 
-def create_user_in_db(username: str) -> Usuario:
+def create_user_in_db(username: str) -> User:
     now = timezone.now()
-    return Usuario.objects.create(
+    return User.objects.create(
         id=uuid.uuid4(),
         nome=username.strip().lower(),
         data_mudanca_senha=now,

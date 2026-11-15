@@ -2,7 +2,7 @@ from typing import Any
 
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 
-from biometrics.models import TrainingTrigger, Usuario
+from biometrics.models import TrainingTrigger, User
 from biometrics.services import normalize_username, retrain_due_users, retrain_user
 
 
@@ -29,7 +29,7 @@ class Command(BaseCommand):
 
         if username:
             clean = normalize_username(username)
-            user = Usuario.objects.filter(nome__iexact=clean).first()
+            user = User.objects.filter(nome__iexact=clean).first()
             if user is None:
                 raise CommandError(f"Usuário '{username}' não encontrado.")
             trained = retrain_user(
