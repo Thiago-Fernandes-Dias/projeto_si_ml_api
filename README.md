@@ -21,7 +21,6 @@ projeto_si_ml_api/
 ├── biometrics/
 │   ├── management/commands/
 │   │   ├── activate_model.py        # Rollback/ativação de versão específica de modelo
-│   │   ├── fit_population_priors.py # Extração de priors populacionais do CSV CMU
 │   │   ├── retrain_models.py        # Retreinamento manual ou via CLI (--username, --force)
 │   │   └── run_scheduler.py         # BlockingScheduler (APScheduler) para retreino periódico
 │   ├── migrations/
@@ -31,10 +30,9 @@ projeto_si_ml_api/
 │   │   ├── inference.py             # Inferência cronometrada com time.perf_counter()
 │   │   ├── m2005.py                 # Implementação de DigraphsMetrics e M2005Alg (Pisani 2024)
 │   │   ├── registry.py              # Persistência .joblib, validação SHA-256 e cache LRU
-│   │   ├── synthetic.py             # Geração de negativos sintéticos (perturbação + priors)
-│   │   └── training.py              # Pipeline de treino do usuário e métricas de separabilidade
+│   │   └── training.py              # Pipeline de treino one-class usando apenas amostras genuínas
 │   ├── admin.py
-│   ├── models.py                    # BiometricProfile, KeystrokeSample, TrainedModel
+│   ├── models.py                    # Usuario, Amostra, ModeloBiometrico
 │   ├── serializers.py
 │   ├── services.py                  # Orquestração de negócio e controle transacional
 │   ├── urls.py
@@ -48,7 +46,6 @@ projeto_si_ml_api/
 │   ├── test_features.py
 │   ├── test_registry.py
 │   ├── test_retrain.py
-│   ├── test_synthetic.py
 │   └── test_training.py
 ├── AGENTS.md
 ├── Dockerfile
@@ -66,9 +63,8 @@ projeto_si_ml_api/
 | Método | Rota | Descrição | Códigos HTTP |
 |---|---|---|---|
 | `GET` | `/api/health` | Status da aplicação e conectividade com o banco | `200`, `503` |
-| `POST` | `/api/register` | Cadastro de usuário e senha (hash PBKDF2) | `201`, `400`, `409` |
-| `POST` | `/api/enrollment` | Recebe 5 amostras de digitação e treina o modelo `v1` | `201`, `400`, `404`, `409` |
-| `POST` | `/api/authenticate` | Verifica senha + classifica vetor biométrico no modelo ativo | `200`, `400`, `401`, `409`, `429` |
+| `POST` | `/api/enrollment` | Recebe 5 amostras/vetores (ou lê do banco compartilhado) e cria apenas o modelo `v1` | `201`, `400`, `404`, `409` |
+| `POST` | `/api/authenticate` | Valida features, dimensão e ordem posicional `3n-2` e classifica no modelo ativo | `200`, `400`, `404`, `409`, `429` |
 
 ---
 
