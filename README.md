@@ -66,6 +66,7 @@ projeto_si_ml_api/
 | `GET` | `/api/health` | Status da aplicação e conectividade com o banco | `200`, `503` |
 | `POST` | `/api/enrollment` | Recebe exatamente 5 `vectors` posicionais do backend e cria apenas o modelo `v1` | `201`, `400`, `404`, `409` |
 | `POST` | `/api/authenticate` | Recebe um `vector` posicional `3n-2`, valida dimensão e classifica no modelo ativo | `200`, `400`, `404`, `409`, `429` |
+| `POST` | `/api/models/rollback` | Endpoint interno: remove modelos criados após uma troca de senha e restaura a versão ativa anterior | `200`, `400`, `404` |
 
 ---
 

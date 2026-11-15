@@ -57,6 +57,7 @@ O **`M2005_IDB`** (`AdaptiveM2005Alg(threshold=0.7, variant="idb", window_size=5
 - **RF07 - Retreinamento Periódico Incremental/Deslizante e sob Demanda:** Retreina usuários que acumularam ao menos `RETRAIN_MIN_NEW_SAMPLES` novas amostras `GENUINE` de alta confiança ($\text{confianca} \ge \text{threshold} + \text{margem}$) desde o modelo ativo, adaptando incrementalmente o submodelo crescente (estatísticas online de Welford sobre todo o histórico genuíno) e avançando a janela deslizante de tamanho `RETRAIN_GENUINE_WINDOW` (`50`) amostras genuínas mais recentes (ignorando `IMPOSTOR` e `UNCERTAIN`), com lock `select_for_update(skip_locked=True)` para segurança concorrente.
 - **RF08 - Versionamento, Integridade e Rollback de Modelos:** Todos os modelos treinados são persistidos em `models_data/<user_id>/v<version>.joblib` com hash `sha256` registrado em `TrainedModel`. O carregamento valida obrigatoriamente o `sha256` antes de `joblib.load`. O comando `activate_model <username> <version>` permite rollback imediato.
 - **RF09 - Calibração de Limiar por Usuário (`min`/`min_non_outlier`):** No enrollment e em cada retreinamento, o limiar do `M2005_IDB` é calibrado a partir dos scores da galeria genuína: `min` usa o menor score; `min_non_outlier` descarta scores abaixo de `mean(S) - 2.5 * std(S)` antes de tomar o mínimo. O resultado é limitado ao teto base `BIOMETRICS_DECISION_THRESHOLD` (`0.7`) e usado na decisão, em `label_for`/`shouldRecordForRetraining` e retornado em `threshold` por `/api/authenticate`. O método é configurável por `BIOMETRICS_THRESHOLD_METHOD` (`min` ou `min_non_outlier`) e a recalibração após adaptação por `BIOMETRICS_THRESHOLD_DYNAMIC`.
+- **RF10 - Isolamento de Modelos após Troca de Senha:** `get_active_model` considera exclusivamente versões com `criado_em >= data_mudanca_senha`; não há fallback para modelos anteriores. O `active_version.json` também só pode selecionar versões pós-troca. `activate_model_version` rejeita versões anteriores à troca, e `retrain_user` não reutiliza a galeria de um modelo antigo. Para compensação de falha na troca de senha, `POST /api/models/rollback` remove modelos criados após um timestamp e restaura a versão ativa anterior.
 
 ---
 
@@ -71,7 +72,14 @@ O **`M2005_IDB`** (`AdaptiveM2005Alg(threshold=0.7, variant="idb", window_size=5
 
 ---
 
-## 5. Governança e Histórico de Revisões
+## 5. Melhorias Futuras
+
+- **Recuperação após queda durante troca de senha:** a compensação atual cobre exceções, mas não uma queda do processo/container entre o commit da nova senha e o treinamento. Uma evolução deve adicionar um estado pendente e reconciliação automática ou um endpoint de reenrollment para concluir o modelo.
+- **Autenticação do endpoint interno `/api/models/rollback`:** hoje ele assume a rede Docker privada. Uma evolução deve exigir segredo/header interno ou usar um identificador de requisição por modelo para limitar o rollback.
+
+---
+
+## 6. Governança e Histórico de Revisões
 
 | Versão | Data | Autor / Agente | Descrição das Modificações |
 |---|---|---|---|
@@ -87,3 +95,5 @@ O **`M2005_IDB`** (`AdaptiveM2005Alg(threshold=0.7, variant="idb", window_size=5
 | `1.9.0` | 2026-11-15 | Thiago Dias / Antigravity | Adição de logs de depuração estruturados em JSON (`stdout`) com propagação de `X-Correlation-ID`, mascaramento de dados sensíveis e controle por ambiente (`BIOMETRICS_DEBUG_LOGS`/`DEBUG_LOGS`, desativados em produção e habilitados em Docker Compose dev). |
 | `1.10.0` | 2026-11-15 | Thiago Dias / Antigravity | Adoção da calibração de limiar `min`/`min_non_outlier` no `M2005_IDB`, com teto em `0.7`, recalibração dinâmica após retreinamento e variáveis `BIOMETRICS_THRESHOLD_METHOD`/`BIOMETRICS_THRESHOLD_DYNAMIC`. |
 | `1.11.0` | 2026-11-15 | Thiago Dias / Antigravity | Remoção do suporte a `samples`/`features`/raw fallback: `/api/enrollment` aceita somente `vectors` e `/api/authenticate` somente `vector`, com schema posicional `3n-2`; gravação de modelo com compensação de arquivos em falha de banco. |
+| `1.12.0` | 2026-11-15 | Thiago Dias / Antigravity | Isolamento estrito de modelos por `data_mudanca_senha`, bloqueio de rollback para versões antigas e endpoint interno `/api/models/rollback` para compensar falhas na troca de senha. |
+| `1.13.0` | 2026-11-15 | Thiago Dias / Antigravity | Registro de melhorias futuras para recuperação após queda durante troca de senha e proteção do endpoint interno de rollback. |
