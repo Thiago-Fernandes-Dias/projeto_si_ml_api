@@ -327,18 +327,23 @@ class AdaptiveM2005Alg(BaseEstimator):
         self,
         threshold: float = 0.7,
         variant: str = "idb",
-        window_size: int | None = 50,
+        window_size: int | None = None,
         inclusion_threshold: float | None = None,
+        threshold_method: str | None = None,
+        dynamic_threshold: bool = False,
     ) -> None:
         normalized_variant = str(variant).lower()
         if normalized_variant not in {"idb", "db"}:
             raise ValueError(f"Variante inválida para AdaptiveM2005Alg: '{variant}'.")
         self.threshold = float(threshold)
+        self._base_threshold = float(threshold)
         self.inclusion_threshold = (
             float(inclusion_threshold) if inclusion_threshold is not None else None
         )
         self.variant = normalized_variant
         self.window_size = int(window_size) if window_size is not None else None
+        self.threshold_method = threshold_method
+        self.dynamic_threshold = bool(dynamic_threshold)
         self.feature_names_ = []
         self.classes_ = np.array([IMPOSTOR_LABEL, GENUINE_LABEL])
         self._sliding_gallery = deque(maxlen=self.window_size)
@@ -346,8 +351,8 @@ class AdaptiveM2005Alg(BaseEstimator):
         self._welford = None
         self._sliding_estimator = M2005Alg(
             threshold=self.threshold,
-            window_strategy="sliding",
-            window_size=self.window_size,
+            window_strategy="none",
+            window_size=None,
             threshold_method=None,
             dynamic_threshold=False,
         )
@@ -375,11 +380,14 @@ class AdaptiveM2005Alg(BaseEstimator):
             "inclusion_threshold": self.inclusion_threshold,
             "variant": self.variant,
             "window_size": self.window_size,
+            "threshold_method": self.threshold_method,
+            "dynamic_threshold": self.dynamic_threshold,
         }
 
     def set_params(self, **params: object) -> Self:
         if "threshold" in params:
             self.threshold = float(params["threshold"])  # type: ignore[arg-type]
+            self._base_threshold = self.threshold
             self._sliding_estimator.threshold = self.threshold
             self._growing_estimator.threshold = self.threshold
         if "inclusion_threshold" in params:
@@ -393,13 +401,16 @@ class AdaptiveM2005Alg(BaseEstimator):
         if "window_size" in params:
             ws = params["window_size"]
             self.set_window_size(int(ws) if ws is not None else None)  # type: ignore[arg-type]
+        if "threshold_method" in params:
+            self.threshold_method = params["threshold_method"]  # type: ignore[assignment]
+        if "dynamic_threshold" in params:
+            self.dynamic_threshold = bool(params["dynamic_threshold"])
         return self
 
     def set_window_size(self, window_size: int | None) -> None:
         self.window_size = int(window_size) if window_size is not None else None
         if self.window_size is not None:
             self._sliding_gallery = deque(self._sliding_gallery, maxlen=self.window_size)
-            self._sliding_estimator.window_size = self.window_size
 
     def _sync_growing_metrics(self) -> None:
         if self._welford is not None:
@@ -425,7 +436,6 @@ class AdaptiveM2005Alg(BaseEstimator):
             [row.copy() for _, row in df.iterrows()],
             maxlen=effective_maxlen,
         )
-        self._sliding_estimator.window_size = effective_maxlen
         self._sliding_estimator.fit(pd.DataFrame(list(self._sliding_gallery)))
 
         if self.variant == "idb":
@@ -436,6 +446,9 @@ class AdaptiveM2005Alg(BaseEstimator):
             self._welford = None
             self._growing_gallery = [row.copy() for _, row in df.iterrows()]
             self._growing_estimator.fit(pd.DataFrame(self._growing_gallery))
+
+        if self.threshold_method is not None:
+            self.calibrate_threshold(method=self.threshold_method)
 
         return self
 
@@ -448,6 +461,36 @@ class AdaptiveM2005Alg(BaseEstimator):
 
     def predict_score(self, x: pd.Series | np.ndarray | Mapping[str, float]) -> float:
         return self.calculate_score(x)
+
+    def calibrate_threshold(
+        self,
+        method: str = "min_non_outlier",
+        outlier_std_factor: float = 2.5,
+    ) -> float:
+        """Calibrates the verification threshold from the genuine gallery scores."""
+        if not self._sliding_gallery:
+            return self.threshold
+
+        scores = np.array(
+            [self.calculate_score(sample) for sample in self._sliding_gallery],
+            dtype=float,
+        )
+
+        if method == "min" or len(scores) <= 1:
+            raw_threshold = float(np.min(scores))
+        else:
+            lower_cutoff = float(
+                np.mean(scores) - outlier_std_factor * np.std(scores, ddof=1)
+            )
+            filtered_scores = scores[scores > lower_cutoff]
+            raw_threshold = (
+                float(np.min(filtered_scores))
+                if len(filtered_scores) > 0
+                else float(np.min(scores))
+            )
+
+        self.threshold = float(min(raw_threshold, self._base_threshold))
+        return self.threshold
 
     def should_include_sample(self, x: pd.Series | pd.DataFrame | np.ndarray) -> bool:
         effective_threshold = (
@@ -484,6 +527,9 @@ class AdaptiveM2005Alg(BaseEstimator):
 
         if self._sliding_gallery:
             self._sliding_estimator.fit(pd.DataFrame(list(self._sliding_gallery)))
+
+        if self.dynamic_threshold and self.threshold_method is not None:
+            self.calibrate_threshold(method=self.threshold_method)
 
     def predict_vec(self, x: pd.Series | np.ndarray | Mapping[str, float]) -> int:
         score = self.calculate_score(x)

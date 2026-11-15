@@ -132,8 +132,8 @@ BIOMETRICS = {
         "inclusion_threshold": None,
         "window_strategy": "sliding",
         "window_size": None,
-        "threshold_method": "min_non_outlier",
-        "dynamic_threshold": True,
+        "threshold_method": env("BIOMETRICS_THRESHOLD_METHOD", default="min_non_outlier"),
+        "dynamic_threshold": env.bool("BIOMETRICS_THRESHOLD_DYNAMIC", default=True),
     },
     "MODELS_DIR": Path(env("BIOMETRICS_MODELS_DIR", default=str(BASE_DIR / "models_data"))),
 }

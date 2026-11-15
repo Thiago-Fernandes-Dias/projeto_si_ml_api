@@ -91,6 +91,9 @@ def _build_training_stats(
             "window_size": int(classifier.window_size or len(classifier._gallery)),
             "inclusion_threshold": classifier.inclusion_threshold,
             "threshold": effective_threshold,
+            "base_threshold": classifier._base_threshold,
+            "threshold_method": classifier.threshold_method,
+            "dynamic_threshold": classifier.dynamic_threshold,
             "gallery_size": int(len(classifier._gallery)),
             "growing_count": int(classifier.growing_count),
             "genuine": int(classifier.growing_count),
@@ -145,6 +148,8 @@ def train_user_model(
             variant=cfg.variant,
             window_size=cfg.window_size,
             inclusion_threshold=cfg.inclusion_threshold,
+            threshold_method=cfg.threshold_method,
+            dynamic_threshold=cfg.dynamic_threshold,
         )
     else:
         threshold_method = (
