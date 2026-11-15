@@ -3,13 +3,14 @@ services:
     image: postgres:17-alpine
     container_name: keystroke-auth-db
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-keystroke_biometrics}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-projeto_si}
+      POSTGRES_USER: ${POSTGRES_USER:-projeto_si}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-projeto_si_dev}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ../projeto-si-backend/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-keystroke_biometrics}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-projeto_si} -d ${POSTGRES_DB:-projeto_si}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -26,7 +27,7 @@ services:
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-django-insecure-docker-secret-key}
       DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,api}
-      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-keystroke_biometrics}
+      DATABASE_URL: postgres://${POSTGRES_USER:-projeto_si}:${POSTGRES_PASSWORD:-projeto_si_dev}@db:5432/${POSTGRES_DB:-projeto_si}
       BIOMETRICS_MODELS_DIR: /app/models_data
     ports:
       - "8000:8000"
@@ -44,11 +45,11 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: keystroke-auth-scheduler
-    command: ["sh", "-c", "python manage.py migrate --noinput && python manage.py run_scheduler"]
+    command: ["sh", "-c", "python manage.py migrate --fake-initial --noinput && python manage.py run_scheduler"]
     environment:
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-django-insecure-docker-secret-key}
       DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
-      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-keystroke_biometrics}
+      DATABASE_URL: postgres://${POSTGRES_USER:-projeto_si}:${POSTGRES_PASSWORD:-projeto_si_dev}@db:5432/${POSTGRES_DB:-projeto_si}
       BIOMETRICS_MODELS_DIR: /app/models_data
     volumes:
       - models_data:/app/models_data
