@@ -96,13 +96,16 @@ def test_retrain_respects_genuine_window_excludes_uncertain_and_impostors_and_su
     v2 = retrained[0]
     assert v2.version == 2
     assert v2.is_active is True
-    assert v2.training_stats["algorithm"] == "M2005_Pisani2024_Sliding_Dynamic"
-    assert v2.training_stats["genuine"] == 6
+    assert v2.training_stats["algorithm"] == "M2005_IDB"
+    assert v2.training_stats["gallery_size"] == 6
+    assert v2.training_stats["growing_count"] == 8
+    assert v2.training_stats["genuine"] == 8
     assert "real_impostors" not in v2.training_stats
     assert "synthetic" not in v2.training_stats
 
     retrained_estimator = load_model(v2)
     assert len(retrained_estimator._gallery) == 6
+    assert retrained_estimator.growing_count == 8
     impostor_score = retrained_estimator.calculate_score([v * 2.0 for v in base_vec])
     assert impostor_score < retrained_estimator.threshold
 
@@ -121,3 +124,44 @@ def test_retrain_respects_genuine_window_excludes_uncertain_and_impostors_and_su
     active_now = get_active_model(user)
     assert active_now is not None
     assert active_now.versao == 2
+
+
+@pytest.mark.django_db
+def test_incremental_retrain_preserves_payload_enrollment_and_feature_keys(settings: Any) -> None:
+    settings.BIOMETRICS = {
+        **settings.BIOMETRICS,
+        "RETRAIN_MIN_NEW_SAMPLES": 2,
+        "RETRAIN_GENUINE_WINDOW": 6,
+        "M2005": {
+            **settings.BIOMETRICS["M2005"],
+            "window_size": 6,
+        },
+    }
+    user = create_user_in_db(username="payload_user")
+    samples = make_genuine_feature_dicts(count=5, seed=202)
+    v1 = enroll_user(username="payload_user", samples=samples, samples_count=5)
+    assert Amostra.objects.filter(usuario=user).count() == 0
+
+    base_vec = features_to_positional_vector(CMU_SAMPLE_FEATURES).tolist()
+    for factor in (1.00, 1.01, 0.99):
+        Amostra.objects.create(
+            usuario=user,
+            origem=OrigemAmostra.LOGIN,
+            vetor=[v * factor for v in base_vec],
+            decisao=DecisaoBiometrica.GENUINE,
+            confianca=0.95,
+            modelo=v1,
+        )
+
+    retrained = retrain_due_users(force=False)
+    assert len(retrained) == 1
+    v2 = retrained[0]
+    assert v2.version == 2
+    assert v2.algoritmo == "M2005_IDB"
+    assert v2.training_stats["gallery_size"] == 6
+    assert v2.training_stats["growing_count"] == 8
+
+    est_v2 = load_model(v2)
+    assert len(est_v2._gallery) == 6
+    assert est_v2.growing_count == 8
+    assert getattr(est_v2, "source_feature_keys_", None) == list(CMU_SAMPLE_FEATURES.keys())

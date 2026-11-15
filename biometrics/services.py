@@ -19,8 +19,9 @@ from biometrics.ml.features import (
     validate_vector,
 )
 from biometrics.ml.inference import classify
+from biometrics.ml.m2005 import AdaptiveM2005Alg
 from biometrics.ml.registry import load_model, save_model
-from biometrics.ml.training import train_user_model
+from biometrics.ml.training import adapt_user_model, get_m2005_config, train_user_model
 from biometrics.models import (
     Amostra,
     DecisaoBiometrica,
@@ -365,11 +366,7 @@ def retrain_user(
     force: bool = False,
 ) -> ModeloBiometrico | None:
     with transaction.atomic():
-        locked_user = (
-            User.objects.select_for_update(skip_locked=True)
-            .filter(id=user.id)
-            .first()
-        )
+        locked_user = User.objects.select_for_update(skip_locked=True).filter(id=user.id).first()
         if locked_user is None:
             return None
 
@@ -382,82 +379,118 @@ def retrain_user(
             return None
 
         base_threshold = float(settings.BIOMETRICS["DECISION_THRESHOLD"])
-        if active_model is not None:
-            try:
-                loaded = load_model(active_model)
-                base_threshold = float(getattr(loaded, "threshold", base_threshold))
-            except Exception:
-                pass
-        margin = float(settings.BIOMETRICS["LABEL_CONFIDENCE_MARGIN"])
-        genuine_min_conf = base_threshold + margin
-
-        min_new_samples = int(settings.BIOMETRICS["RETRAIN_MIN_NEW_SAMPLES"])
-        if not force and active_model is not None:
-            new_genuine_count = Amostra.objects.filter(
-                usuario=locked_user,
-                origem=OrigemAmostra.LOGIN,
-                decisao=DecisaoBiometrica.GENUINE,
-                confianca__gte=genuine_min_conf,
-                coletada_em__gt=active_model.criado_em,
-                coletada_em__gte=locked_user.data_mudanca_senha,
-            ).count()
-            if new_genuine_count < min_new_samples:
-                return None
-
-        genuine_window = int(settings.BIOMETRICS["RETRAIN_GENUINE_WINDOW"])
-
-        genuine_samples = list(
-            Amostra.objects.filter(
-                usuario=locked_user,
-                coletada_em__gte=locked_user.data_mudanca_senha,
-            )
-            .filter(
-                models.Q(origem=OrigemAmostra.CADASTRO)
-                | models.Q(
-                    origem=OrigemAmostra.LOGIN,
-                    decisao=DecisaoBiometrica.GENUINE,
-                    confianca__gte=genuine_min_conf,
-                )
-            )
-            .order_by("-coletada_em", "-id")[:genuine_window]
-        )
-        if not genuine_samples:
-            return None
-        genuine_samples.reverse()
-
-        expected_dim = len(genuine_samples[0].vetor)
-        genuine_vectors = [
-            np.asarray(s.vetor, dtype=np.float64)
-            for s in genuine_samples
-            if len(s.vetor) == expected_dim
-        ]
-        if not genuine_vectors:
-            return None
-
-        genuine_matrix = np.vstack(genuine_vectors)
-        schema = positional_schema(expected_dim)
-        training_result = train_user_model(
-            genuine=genuine_matrix,
-            schema=schema,
-        )
-
+        prev_estimator: Any = None
         if active_model is not None:
             try:
                 prev_estimator = load_model(active_model)
+                base_threshold = float(getattr(prev_estimator, "threshold", base_threshold))
+            except Exception:
+                prev_estimator = None
+        margin = float(settings.BIOMETRICS["LABEL_CONFIDENCE_MARGIN"])
+        genuine_min_conf = base_threshold + margin
+
+        new_logins_qs = Amostra.objects.filter(
+            usuario=locked_user,
+            origem=OrigemAmostra.LOGIN,
+            decisao=DecisaoBiometrica.GENUINE,
+            confianca__gte=genuine_min_conf,
+            coletada_em__gte=locked_user.data_mudanca_senha,
+        )
+        if active_model is not None:
+            new_logins_qs = new_logins_qs.filter(coletada_em__gt=active_model.criado_em)
+
+        min_new_samples = int(settings.BIOMETRICS["RETRAIN_MIN_NEW_SAMPLES"])
+        if not force and active_model is not None and new_logins_qs.count() < min_new_samples:
+            return None
+
+        cfg = get_m2005_config()
+        can_adapt_incrementally = (
+            active_model is not None
+            and active_model.criado_em >= locked_user.data_mudanca_senha
+            and isinstance(prev_estimator, AdaptiveM2005Alg)
+            and cfg.algorithm in {"M2005_IDB", "M2005_DB"}
+            and prev_estimator.variant == cfg.variant
+        )
+
+        if can_adapt_incrementally:
+            new_samples = list(new_logins_qs.order_by("coletada_em", "id"))
+            expected_dim = len(getattr(prev_estimator, "feature_names_", []))
+            new_vectors = [
+                np.asarray(s.vetor, dtype=np.float64)
+                for s in new_samples
+                if expected_dim == 0 or len(s.vetor) == expected_dim
+            ]
+            new_matrix = np.vstack(new_vectors) if new_vectors else None
+            training_result = adapt_user_model(
+                prev_estimator,
+                new_genuine=new_matrix,
+                schema=list(getattr(prev_estimator, "feature_names_", [])) or None,
+            )
+        else:
+            genuine_window = int(settings.BIOMETRICS["RETRAIN_GENUINE_WINDOW"])
+            genuine_samples = list(
+                Amostra.objects.filter(
+                    usuario=locked_user,
+                    coletada_em__gte=locked_user.data_mudanca_senha,
+                )
+                .filter(
+                    models.Q(origem=OrigemAmostra.CADASTRO)
+                    | models.Q(
+                        origem=OrigemAmostra.LOGIN,
+                        decisao=DecisaoBiometrica.GENUINE,
+                        confianca__gte=genuine_min_conf,
+                    )
+                )
+                .order_by("coletada_em", "id")
+            )
+            if not genuine_samples:
+                prev_gallery = getattr(prev_estimator, "_gallery", [])
+                if not prev_gallery:
+                    return None
+                genuine_vectors = [
+                    row.to_numpy(dtype=np.float64) for row in prev_gallery
+                ]
+                expected_dim = len(genuine_vectors[0])
+            else:
+                if cfg.algorithm not in {"M2005_IDB", "M2005_DB"}:
+                    genuine_samples = genuine_samples[-genuine_window:]
+                expected_dim = len(genuine_samples[0].vetor)
+                genuine_vectors = [
+                    np.asarray(s.vetor, dtype=np.float64)
+                    for s in genuine_samples
+                    if len(s.vetor) == expected_dim
+                ]
+            if not genuine_vectors:
+                return None
+
+            genuine_matrix = np.vstack(genuine_vectors)
+            schema = (
+                list(getattr(prev_estimator, "feature_names_", []))
+                if prev_estimator is not None
+                and len(getattr(prev_estimator, "feature_names_", [])) == expected_dim
+                else positional_schema(expected_dim)
+            )
+            training_result = train_user_model(
+                genuine=genuine_matrix,
+                schema=schema,
+            )
+            if prev_estimator is not None:
                 prev_keys = getattr(prev_estimator, "source_feature_keys_", None)
                 if prev_keys is not None:
                     training_result.model.source_feature_keys_ = prev_keys  # type: ignore[attr-defined]
-            except Exception:
-                pass
 
         return save_model(user=locked_user, result=training_result, trigger=trigger)
 
 
 def retrain_due_users(now: Any = None, force: bool = False) -> list[ModeloBiometrico]:
     retrained: list[ModeloBiometrico] = []
-    users = User.objects.filter(
-        models.Q(biometria_cadastrada_em__isnull=False) | models.Q(modelos__isnull=False)
-    ).distinct().order_by("criado_em", "id")
+    users = (
+        User.objects.filter(
+            models.Q(biometria_cadastrada_em__isnull=False) | models.Q(modelos__isnull=False)
+        )
+        .distinct()
+        .order_by("criado_em", "id")
+    )
 
     for user in users:
         new_model = retrain_user(

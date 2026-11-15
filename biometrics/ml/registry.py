@@ -65,7 +65,7 @@ def save_model(
         meta_path.write_text(json.dumps(meta_payload, indent=2), encoding="utf-8")
 
         algorithm_name = str(
-            result.stats.get("algorithm", "M2005_Pisani2024_Sliding_Dynamic")
+            result.stats.get("algorithm", "M2005_IDB")
         )[:50]
 
         trained_model = ModeloBiometrico.objects.create(

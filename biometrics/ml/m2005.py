@@ -1,3 +1,4 @@
+from collections import deque
 from collections.abc import Mapping
 from typing import Self
 
@@ -264,6 +265,242 @@ class M2005Alg(BaseEstimator):
         return np.column_stack([1.0 - scores, scores])
 
 
+class _WelfordOnlineStats:
+    """Welford's online algorithm for mean and sample standard deviation per digraph."""
+
+    count: int
+    mean: dict[str, float]
+    squared_dev: dict[str, float]
+
+    def __init__(self, df: pd.DataFrame) -> None:
+        self.count = int(len(df))
+        self.mean = {str(col): float(val) for col, val in df.mean().items()}
+        self.squared_dev = {str(col): 0.0 for col in df.columns}
+        for _, row in df.iterrows():
+            for col in df.columns:
+                col_key = str(col)
+                delta = float(row[col]) - self.mean[col_key]
+                self.squared_dev[col_key] += delta * delta
+
+    def update(self, row: pd.Series) -> None:
+        self.count += 1
+        for col in row.index:
+            col_key = str(col)
+            val = float(row[col])
+            delta = val - self.mean[col_key]
+            self.mean[col_key] += delta / self.count
+            self.squared_dev[col_key] += delta * (val - self.mean[col_key])
+
+    def get_metrics(self) -> dict[str, DigraphsMetrics]:
+        metrics: dict[str, DigraphsMetrics] = {}
+        for col, mean_val in self.mean.items():
+            variance = (
+                max(self.squared_dev[col], 0.0) / (self.count - 1) if self.count > 1 else 0.0
+            )
+            std_val = float(np.sqrt(variance))
+            metrics[col] = DigraphsMetrics(mean_val, std_val, mean_val)
+        return metrics
+
+
+class AdaptiveM2005Alg(BaseEstimator):
+    """M2005 with Double Parallel (DB) and Improved Double Parallel (IDB) (Pisani et al., 2015).
+
+    Maintains two M2005 submodels per user:
+      1. Growing model (Welford incremental stats in O(1) memory for IDB; full gallery for DB).
+      2. Sliding model (bounded FIFO gallery of size window_size).
+    The verification score is the arithmetic average of both submodels.
+    """
+
+    threshold: float
+    inclusion_threshold: float | None
+    variant: str
+    window_size: int | None
+    feature_names_: list[str]
+    classes_: np.ndarray
+    _sliding_gallery: deque[pd.Series]
+    _growing_gallery: list[pd.Series]
+    _welford: _WelfordOnlineStats | None
+    _sliding_estimator: M2005Alg
+    _growing_estimator: M2005Alg
+
+    def __init__(
+        self,
+        threshold: float = 0.7,
+        variant: str = "idb",
+        window_size: int | None = 50,
+        inclusion_threshold: float | None = None,
+    ) -> None:
+        normalized_variant = str(variant).lower()
+        if normalized_variant not in {"idb", "db"}:
+            raise ValueError(f"Variante inválida para AdaptiveM2005Alg: '{variant}'.")
+        self.threshold = float(threshold)
+        self.inclusion_threshold = (
+            float(inclusion_threshold) if inclusion_threshold is not None else None
+        )
+        self.variant = normalized_variant
+        self.window_size = int(window_size) if window_size is not None else None
+        self.feature_names_ = []
+        self.classes_ = np.array([IMPOSTOR_LABEL, GENUINE_LABEL])
+        self._sliding_gallery = deque(maxlen=self.window_size)
+        self._growing_gallery = []
+        self._welford = None
+        self._sliding_estimator = M2005Alg(
+            threshold=self.threshold,
+            window_strategy="sliding",
+            window_size=self.window_size,
+            threshold_method=None,
+            dynamic_threshold=False,
+        )
+        self._growing_estimator = M2005Alg(
+            threshold=self.threshold,
+            window_strategy="none",
+            window_size=None,
+            threshold_method=None,
+            dynamic_threshold=False,
+        )
+
+    @property
+    def _gallery(self) -> list[pd.Series]:
+        return list(self._sliding_gallery)
+
+    @property
+    def growing_count(self) -> int:
+        if self.variant == "idb" and self._welford is not None:
+            return int(self._welford.count)
+        return len(self._growing_gallery)
+
+    def get_params(self, deep: bool = True) -> dict[str, object]:
+        return {
+            "threshold": self.threshold,
+            "inclusion_threshold": self.inclusion_threshold,
+            "variant": self.variant,
+            "window_size": self.window_size,
+        }
+
+    def set_params(self, **params: object) -> Self:
+        if "threshold" in params:
+            self.threshold = float(params["threshold"])  # type: ignore[arg-type]
+            self._sliding_estimator.threshold = self.threshold
+            self._growing_estimator.threshold = self.threshold
+        if "inclusion_threshold" in params:
+            val = params["inclusion_threshold"]
+            self.inclusion_threshold = float(val) if val is not None else None  # type: ignore[arg-type]
+        if "variant" in params:
+            normalized = str(params["variant"]).lower()
+            if normalized not in {"idb", "db"}:
+                raise ValueError(f"Variante inválida para AdaptiveM2005Alg: '{normalized}'.")
+            self.variant = normalized
+        if "window_size" in params:
+            ws = params["window_size"]
+            self.set_window_size(int(ws) if ws is not None else None)  # type: ignore[arg-type]
+        return self
+
+    def set_window_size(self, window_size: int | None) -> None:
+        self.window_size = int(window_size) if window_size is not None else None
+        if self.window_size is not None:
+            self._sliding_gallery = deque(self._sliding_gallery, maxlen=self.window_size)
+            self._sliding_estimator.window_size = self.window_size
+
+    def _sync_growing_metrics(self) -> None:
+        if self._welford is not None:
+            self._growing_estimator._digraphs_metrics = self._welford.get_metrics()
+            self._growing_estimator.feature_names_ = list(self.feature_names_)
+
+    def fit(
+        self,
+        x: pd.DataFrame | np.ndarray,
+        y: list[int] | np.ndarray | None = None,
+        feature_names: list[str] | None = None,
+    ) -> Self:
+        df = _coerce_dataframe(x, feature_names=feature_names)
+        if y is not None:
+            y_arr = np.asarray(y)
+            if len(y_arr) == len(df) and np.any(y_arr == GENUINE_LABEL):
+                df = df.iloc[y_arr == GENUINE_LABEL].reset_index(drop=True)
+
+        self.feature_names_ = [str(col) for col in df.columns]
+        self.classes_ = np.array([IMPOSTOR_LABEL, GENUINE_LABEL])
+        effective_maxlen = self.window_size if self.window_size is not None else max(len(df), 1)
+        self._sliding_gallery = deque(
+            [row.copy() for _, row in df.iterrows()],
+            maxlen=effective_maxlen,
+        )
+        self._sliding_estimator.window_size = effective_maxlen
+        self._sliding_estimator.fit(pd.DataFrame(list(self._sliding_gallery)))
+
+        if self.variant == "idb":
+            self._growing_gallery = []
+            self._welford = _WelfordOnlineStats(df)
+            self._sync_growing_metrics()
+        else:
+            self._welford = None
+            self._growing_gallery = [row.copy() for _, row in df.iterrows()]
+            self._growing_estimator.fit(pd.DataFrame(self._growing_gallery))
+
+        return self
+
+    def calculate_score(self, x: pd.Series | np.ndarray | Mapping[str, float]) -> float:
+        names = self.feature_names_ or list(self._sliding_estimator.feature_names_)
+        series = _coerce_series(x, feature_names=names)
+        score_sliding = self._sliding_estimator.calculate_score(series)
+        score_growing = self._growing_estimator.calculate_score(series)
+        return float((score_sliding + score_growing) / 2.0)
+
+    def predict_score(self, x: pd.Series | np.ndarray | Mapping[str, float]) -> float:
+        return self.calculate_score(x)
+
+    def should_include_sample(self, x: pd.Series | pd.DataFrame | np.ndarray) -> bool:
+        effective_threshold = (
+            self.inclusion_threshold if self.inclusion_threshold is not None else self.threshold
+        )
+        if isinstance(x, pd.Series) or (isinstance(x, np.ndarray) and x.ndim == 1):
+            return self.calculate_score(x) >= effective_threshold
+        df = _coerce_dataframe(x, feature_names=self.feature_names_)
+        return all(self.calculate_score(row) >= effective_threshold for _, row in df.iterrows())
+
+    def adapt(self, x: pd.Series | pd.DataFrame | np.ndarray) -> None:
+        if isinstance(x, pd.Series) or (isinstance(x, np.ndarray) and x.ndim == 1):
+            rows = [_coerce_series(x, feature_names=self.feature_names_).copy()]
+        else:
+            df = _coerce_dataframe(x, feature_names=self.feature_names_)
+            rows = [row.copy() for _, row in df.iterrows()]
+
+        if not rows:
+            return
+
+        for row in rows:
+            self._sliding_gallery.append(row.copy())
+            if self.variant == "idb":
+                if self._welford is None:
+                    self._welford = _WelfordOnlineStats(pd.DataFrame([row]))
+                else:
+                    self._welford.update(row)
+                self._sync_growing_metrics()
+            else:
+                self._growing_gallery.append(row.copy())
+
+        if self.variant == "db" and self._growing_gallery:
+            self._growing_estimator.fit(pd.DataFrame(self._growing_gallery))
+
+        if self._sliding_gallery:
+            self._sliding_estimator.fit(pd.DataFrame(list(self._sliding_gallery)))
+
+    def predict_vec(self, x: pd.Series | np.ndarray | Mapping[str, float]) -> int:
+        score = self.calculate_score(x)
+        return GENUINE_LABEL if score >= self.threshold else IMPOSTOR_LABEL
+
+    def predict(self, x: pd.DataFrame | np.ndarray) -> np.ndarray:
+        df = _coerce_dataframe(x, feature_names=self.feature_names_)
+        return np.array([self.predict_vec(row) for _, row in df.iterrows()])
+
+    def predict_proba(self, x: pd.DataFrame | np.ndarray | pd.Series) -> np.ndarray:
+        df = _coerce_dataframe(x, feature_names=self.feature_names_)
+        scores = np.array([self.calculate_score(row) for _, row in df.iterrows()], dtype=np.float64)
+        return np.column_stack([1.0 - scores, scores])
+
+
 M2005 = M2005Alg
 ImprovedStatisticalAlg = M2005Alg
 M2005_Pisani2024_Sliding_Dynamic = M2005Alg
+M2005_IDB = AdaptiveM2005Alg
+

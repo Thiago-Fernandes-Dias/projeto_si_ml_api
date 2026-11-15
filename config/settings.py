@@ -122,9 +122,12 @@ BIOMETRICS = {
     "RETRAIN_MIN_NEW_SAMPLES": env.int("BIOMETRICS_RETRAIN_MIN_NEW_SAMPLES", default=5),
     "RETRAIN_GENUINE_WINDOW": env.int("BIOMETRICS_RETRAIN_GENUINE_WINDOW", default=50),
     "M2005": {
+        "algorithm": env("BIOMETRICS_ALGORITHM", default="M2005_IDB"),
+        "variant": env("BIOMETRICS_M2005_VARIANT", default="idb"),
         "threshold": env.float("BIOMETRICS_DECISION_THRESHOLD", default=0.7),
+        "inclusion_threshold": None,
         "window_strategy": "sliding",
-        "window_size": env.int("BIOMETRICS_RETRAIN_GENUINE_WINDOW", default=50),
+        "window_size": None,
         "threshold_method": "min_non_outlier",
         "dynamic_threshold": True,
     },
