@@ -8,7 +8,8 @@ A API utiliza o classificador estatístico adaptativo **`M2005_IDB`** (`Adaptive
 
 - **Submodelo Deslizante (`window_size=50`):** Mantém média, mediana e desvio-padrão por dígrafo sobre as `50` amostras genuínas mais recentes, capturando a evolução recente do usuário.
 - **Submodelo Crescente Incremental (Welford $O(1)$):** Acumula média e desvio-padrão online sobre **todo** o histórico genuíno do usuário desde o cadastro (preservado incrementalmente no retreinamento), impedindo deriva ou esquecimento catastrófico.
-- **Decisão e Desempenho Experimental (`projeto_si_experimentos`):** Score final dado pela média aritmética dos submodelos deslizante e crescente (`threshold = 0.7`):
+- **Calibração de Limiar (`min` / `min_non_outlier`):** Após o treinamento (e a cada retreinamento, com `dynamic_threshold=True`), o limiar do usuário é calibrado a partir dos scores da galeria genuína: `min` usa o menor score; `min_non_outlier` descarta scores abaixo de `mean - 2.5 * std` antes de tomar o mínimo. O valor é limitado ao teto base `0.7`. O limiar calibrado é usado na decisão e na resposta de `/api/authenticate`.
+- **Decisão e Desempenho Experimental (`projeto_si_experimentos`):** Score final dado pela média aritmética dos submodelos deslizante e crescente (resultados medidos com `threshold = 0.7`):
   - **CMU (`DSL-StrongPasswordData.csv`):** `BACC = 0.8909`, **FRR = `15.24%`** e **FAR = `6.58%`** (3× menor que os `18.98%` do `M2005_Pisani2024_Sliding_Dynamic`).
   - **Keyrecs:** `BACC = 0.7980`, **FRR = `9.03%`** e **FAR = `31.37%`** (`+7.61 p.p.` de BACC e `-18.96 p.p.` de FAR frente ao `M2005_Pisani2024_Sliding_Dynamic`).
 
@@ -26,10 +27,10 @@ projeto_si_ml_api/
 │   ├── migrations/
 │   │   └── 0001_initial.py
 │   ├── ml/
-│   │   ├── features.py              # Validação de H/DD/UD, schema canônico e vetorização
+│   │   ├── features.py              # Validação de vetores posicionais 3n-2 e schema CMU
 │   │   ├── inference.py             # Inferência cronometrada com time.perf_counter()
 │   │   ├── m2005.py                 # Implementação de DigraphsMetrics e M2005Alg (Pisani 2024)
-│   │   ├── registry.py              # Persistência .joblib, validação SHA-256 e cache LRU
+│   │   ├── registry.py              # Persistência .joblib, SHA-256, cache LRU e compensação atômica
 │   │   └── training.py              # Pipeline de treino one-class usando apenas amostras genuínas
 │   ├── admin.py
 │   ├── models.py                    # Usuario, Amostra, ModeloBiometrico
@@ -63,8 +64,8 @@ projeto_si_ml_api/
 | Método | Rota | Descrição | Códigos HTTP |
 |---|---|---|---|
 | `GET` | `/api/health` | Status da aplicação e conectividade com o banco | `200`, `503` |
-| `POST` | `/api/enrollment` | Recebe 5 amostras/vetores (ou lê do banco compartilhado) e cria apenas o modelo `v1` | `201`, `400`, `404`, `409` |
-| `POST` | `/api/authenticate` | Valida features, dimensão e ordem posicional `3n-2` e classifica no modelo ativo | `200`, `400`, `404`, `409`, `429` |
+| `POST` | `/api/enrollment` | Recebe exatamente 5 `vectors` posicionais do backend e cria apenas o modelo `v1` | `201`, `400`, `404`, `409` |
+| `POST` | `/api/authenticate` | Recebe um `vector` posicional `3n-2`, valida dimensão e classifica no modelo ativo | `200`, `400`, `404`, `409`, `429` |
 
 ---
 
