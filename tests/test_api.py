@@ -257,3 +257,16 @@ def test_validation_and_not_found_error_codes() -> None:
         format="json",
     )
     assert res_400_schema.status_code == 400
+
+    res_400_raw_only = client.post(
+        "/api/authenticate",
+        {
+            "username": "user_val",
+            "rawTimings": [
+                {"key": "a", "pressTime": 100.0, "releaseTime": 200.0},
+                {"key": "b", "pressTime": 250.0, "releaseTime": 330.0},
+            ],
+        },
+        format="json",
+    )
+    assert res_400_raw_only.status_code == 400

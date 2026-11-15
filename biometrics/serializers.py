@@ -38,7 +38,6 @@ class AuthenticateRequestSerializer(serializers.Serializer):
         allow_empty=False,
     )
     features = serializers.DictField(required=False)
-    rawTimings = serializers.JSONField(required=False, allow_null=True)
     sample = serializers.DictField(required=False)
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
@@ -50,26 +49,21 @@ class AuthenticateRequestSerializer(serializers.Serializer):
         sample_obj = attrs.get("sample")
         vector = attrs.get("vector")
         features = attrs.get("features")
-        raw_timings = attrs.get("rawTimings")
 
         if isinstance(sample_obj, dict):
             if vector is None and isinstance(sample_obj.get("vector"), list):
                 vector = sample_obj.get("vector")
             if features is None and isinstance(sample_obj.get("features"), dict):
                 features = sample_obj.get("features")
-            if raw_timings is None:
-                raw_timings = sample_obj.get("rawTimings", sample_obj.get("raw_timings"))
 
         has_vector = isinstance(vector, list) and len(vector) > 0
         has_features = isinstance(features, dict) and len(features) > 0
-        has_raw_timings = isinstance(raw_timings, list) and len(raw_timings) > 0
 
-        if not (has_vector or has_features or has_raw_timings):
+        if not (has_vector or has_features):
             raise serializers.ValidationError(
-                {"features": "Informe 'vector', 'features' ou 'rawTimings'."}
+                {"features": "Informe 'vector' ou 'features'."}
             )
 
         attrs["resolved_vector"] = vector if has_vector else None
         attrs["resolved_features"] = features if has_features else None
-        attrs["resolved_raw_timings"] = raw_timings if has_raw_timings else None
         return attrs

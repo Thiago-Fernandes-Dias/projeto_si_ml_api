@@ -12,7 +12,6 @@ from django.db import models, transaction
 from biometrics.ml.features import (
     FeatureValidationError,
     build_schema,
-    extract_vector_from_raw_timings,
     features_to_positional_vector,
     mean_hold_time_ms,
     positional_schema,
@@ -149,11 +148,6 @@ def _extract_vectors_from_payload_samples(
         elif "features" in item and isinstance(item["features"], Mapping):
             feature_dicts.append(item["features"])
             durations_ms.append(duration)
-        elif "rawTimings" in item or "raw_timings" in item:
-            raw_timings = item.get("rawTimings", item.get("raw_timings"))
-            vec = extract_vector_from_raw_timings(raw_timings)
-            extracted_vectors.append(vec)
-            durations_ms.append(duration or float(np.sum(vec[0::3]) * 1000.0))
         else:
             feature_dicts.append(item)
             durations_ms.append(duration)
@@ -290,7 +284,6 @@ def label_for(
 def authenticate_user(
     username: str | None = None,
     features: Mapping[str, float] | None = None,
-    raw_timings: Any = None,
     vector: Sequence[float] | None = None,
     user_id: str | uuid.UUID | None = None,
 ) -> AuthenticationOutcome:
@@ -312,11 +305,9 @@ def authenticate_user(
     elif features is not None:
         source_keys = getattr(estimator, "source_feature_keys_", None)
         pos_vector = features_to_positional_vector(features, schema=source_keys)
-    elif raw_timings is not None:
-        pos_vector = extract_vector_from_raw_timings(raw_timings)
     else:
         raise FeatureValidationError(
-            "Nenhuma amostra biométrica (vector, features ou rawTimings) informada."
+            "Nenhuma amostra biométrica (vector ou features) informada."
         )
 
     if expected_dim > 0 and len(pos_vector) != expected_dim:

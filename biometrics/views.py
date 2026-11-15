@@ -132,7 +132,6 @@ class AuthenticateView(APIView):
         user_id = serializer.validated_data.get("userId")
         vector = serializer.validated_data.get("resolved_vector")
         features = serializer.validated_data.get("resolved_features")
-        raw_timings = serializer.validated_data.get("resolved_raw_timings")
 
         try:
             outcome = authenticate_user(
@@ -140,7 +139,6 @@ class AuthenticateView(APIView):
                 user_id=user_id,
                 vector=vector,
                 features=features,
-                raw_timings=raw_timings,
             )
         except UserNotFoundError as exc:
             return Response(

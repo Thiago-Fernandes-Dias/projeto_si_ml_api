@@ -1,7 +1,6 @@
 import math
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any
 
 import numpy as np
 
@@ -144,49 +143,6 @@ def validate_vector(vector: Sequence[float] | np.ndarray) -> np.ndarray:
         values.append(val)
 
     return np.array(values, dtype=np.float64)
-
-
-def extract_vector_from_raw_timings(raw_timings: Sequence[Mapping[str, Any]]) -> np.ndarray:
-    if not isinstance(raw_timings, Sequence) or len(raw_timings) < 2 or len(raw_timings) > 128:
-        raise FeatureValidationError("rawTimings deve conter entre 2 e 128 eventos de tecla.")
-
-    parsed_events: list[tuple[float, float]] = []
-    for idx, event in enumerate(raw_timings):
-        if not isinstance(event, Mapping):
-            raise FeatureValidationError(f"Evento #{idx + 1} de rawTimings inválido.")
-        press_raw = event.get("pressTime", event.get("press_time"))
-        release_raw = event.get("releaseTime", event.get("release_time", press_raw))
-        if (
-            press_raw is None
-            or release_raw is None
-            or isinstance(press_raw, bool)
-            or isinstance(release_raw, bool)
-            or not isinstance(press_raw, int | float)
-            or not isinstance(release_raw, int | float)
-        ):
-            raise FeatureValidationError(f"Tempos inválidos no evento #{idx + 1} de rawTimings.")
-        press = float(press_raw)
-        release = float(release_raw)
-        if not math.isfinite(press) or not math.isfinite(release) or release < press:
-            raise FeatureValidationError(f"Cronologia inválida no evento #{idx + 1} de rawTimings.")
-        parsed_events.append((press, release))
-
-    parsed_events.sort(key=lambda item: item[0])
-    num_keys = len(parsed_events)
-    values = np.empty(num_keys * 3 - 2, dtype=np.float64)
-
-    for idx, (press, release) in enumerate(parsed_events):
-        pos = idx * 3
-        hold_sec = max((release - press) / 1000.0, 1e-4)
-        values[pos] = hold_sec
-        if idx < num_keys - 1:
-            next_press = parsed_events[idx + 1][0]
-            dd_sec = max((next_press - press) / 1000.0, 1e-4)
-            ud_sec = (next_press - release) / 1000.0
-            values[pos + 1] = dd_sec
-            values[pos + 2] = ud_sec
-
-    return validate_vector(values)
 
 
 def _validate_positional_key_order(keys: Sequence[str]) -> None:
