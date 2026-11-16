@@ -8,15 +8,17 @@ A API é o motor biométrico do sistema: recebe vetores posicionais do `projeto-
 
 ## Algoritmo Biométrico: `M2005_IDB`
 
-A API utiliza o classificador estatístico adaptativo **`M2005_IDB`** (`AdaptiveM2005Alg(threshold=0.7, variant="idb", window_size=50)` — *Improved Double Parallel*, Pisani et al., IJCNN 2015), mantendo compatibilidade retroativa com `M2005Alg` (`M2005_Pisani2024_Sliding_Dynamic`). O `M2005_IDB` foi selecionado por liderar os 52 experimentos do `projeto_si_experimentos` (`results/exp_metric_averages.csv`) em BACC médio (`0.8445`), G-mean (`0.8400`) e equilíbrio entre FRR e FAR:
+A API utiliza o classificador estatístico adaptativo **`M2005_IDB`** (`AdaptiveM2005Alg(threshold=0.7, variant="idb", window_size=50)` — *Improved Double Parallel*, Pisani et al., IJCNN 2015), mantendo compatibilidade retroativa com `M2005Alg` (`M2005_Pisani2024_Sliding_Dynamic`). O `M2005_IDB` foi selecionado por liderar os 52 experimentos do `projeto_si_experimentos` (consolidados localmente em `results/exp_metric_averages.csv` por `generate_exp_metric_averages.py`) em BACC médio (`0.8445`), G-mean (`0.8400`) e equilíbrio entre FRR e FAR:
 
 - **Submodelo Deslizante (`window_size=50`):** Mantém média, mediana e desvio-padrão por dígrafo sobre as `50` amostras genuínas mais recentes, capturando a evolução recente do usuário.
 - **Submodelo Crescente Incremental (Welford $O(1)$):** Acumula média e desvio-padrão online sobre **todo** o histórico genuíno do usuário desde o cadastro (preservado incrementalmente no retreinamento), impedindo deriva ou esquecimento catastrófico.
 - **Calibração de Limiar (`min` / `min_non_outlier`):** Após o treinamento (e a cada retreinamento, com `dynamic_threshold=True`), o limiar do usuário é calibrado a partir dos scores da galeria genuína: `min` usa o menor score; `min_non_outlier` descarta scores abaixo de `mean - 2.5 * std` antes de tomar o mínimo. O valor é limitado ao teto base `0.7`. O limiar calibrado é usado na decisão e na resposta de `/api/authenticate`.
+  - O `M2005_IDB` original de Pisani et al. (2015) usa threshold fixo; a calibração e a recalibração dinâmica vêm de Pisani (2024).
+  - O teto `0.7` é uma decisão deste projeto. O `M2005Alg` do `projeto_si_experimentos` segue Pisani (2024) sem esse cap (o threshold pode chegar ao mínimo dos scores da galeria).
 - **Decisão e Desempenho Experimental (`projeto_si_experimentos`):** Score final dado pela média aritmética dos submodelos deslizante e crescente (resultados medidos com `threshold = 0.7`):
   - **CMU (`DSL-StrongPasswordData.csv`):** `BACC = 0.8909`, **FRR = `15.24%`** e **FAR = `6.58%`** (3× menor que os `18.98%` do `M2005_Pisani2024_Sliding_Dynamic`).
   - **Keyrecs:** `BACC = 0.7980`, **FRR = `9.03%`** e **FAR = `31.37%`** (`+7.61 p.p.` de BACC e `-18.96 p.p.` de FAR frente ao `M2005_Pisani2024_Sliding_Dynamic`).
-- **Treinamento One-Class:** apenas amostras genuínas de alta confiança são usadas no enrollment e no retreinamento; amostras `IMPOSTOR` e `UNCERTAIN` são descartadas.
+- **Treinamento One-Class:** o enrollment usa apenas os vetores genuínos fornecidos; no retreinamento, entram as amostras de `Cadastro` e as de `Login` que sejam `Genuine` e superem a banda de confiança. `IMPOSTOR` e `UNCERTAIN` são descartadas.
 
 ### Configuração do algoritmo
 
@@ -49,6 +51,8 @@ projeto_si_ml_api/
 │   │   ├── registry.py              # Persistência .joblib, SHA-256, cache LRU e compensação atômica
 │   │   └── training.py              # Pipeline de treino one-class usando apenas amostras genuínas
 │   ├── admin.py
+│   ├── logging_utils.py             # Logs JSON estruturados, correlação e redação de dados sensíveis
+│   ├── middleware.py                # Propaga X-Correlation-ID e registra requisições HTTP
 │   ├── models.py                    # User, Amostra e ModeloBiometrico
 │   ├── serializers.py
 │   ├── services.py                  # Orquestração de negócio, retreinamento e rollback
@@ -61,9 +65,11 @@ projeto_si_ml_api/
 ├── tests/
 │   ├── test_api.py
 │   ├── test_features.py
+│   ├── test_logging.py
 │   ├── test_registry.py
 │   ├── test_retrain.py
 │   └── test_training.py
+├── .env.example
 ├── AGENTS.md
 ├── Dockerfile
 ├── Makefile
@@ -246,8 +252,8 @@ Resposta `200` (resumida):
   "decision": "GENUINE",
   "confidence": 0.931,
   "confidenceScore": 0.931,
-  "threshold": 0.712,
-  "thresholdScore": 0.712,
+  "threshold": 0.68,
+  "thresholdScore": 0.68,
   "inferenceTimeMs": 4.82,
   "meanHoldTimeMs": 109.4,
   "userAverageHoldTimeMs": 112.0,
@@ -258,17 +264,18 @@ Resposta `200` (resumida):
 }
 ```
 
-`shouldRecordForRetraining` é `true` somente quando a decisão é `GENUINE` e o score supera `threshold + LABEL_CONFIDENCE_MARGIN` (`0.15` por padrão), ou seja, quando a amostra é confiável o bastante para alimentar o retreinamento. A ML API **não** grava a amostra; o backend .NET decide persisti-la.
+`shouldRecordForRetraining` é `true` somente quando a decisão é `GENUINE` e o score atinge `threshold + LABEL_CONFIDENCE_MARGIN` (`0.15` por padrão), ou seja, quando a amostra é confiável o bastante para alimentar o retreinamento. A ML API **não** grava a amostra; o backend .NET decide persisti-la.
 
 ---
 
 ## Ciclo de Vida dos Modelos
 
-- Cada modelo é persistido em `models_data/<user_id>/v<version>.joblib` com hash `sha256` em `ModeloBiometrico`; o carregamento valida o hash antes de `joblib.load`.
+- Cada modelo é persistido em `models_data/<user_id>/v<version>_<sha256>.joblib`; o hash SHA-256 fica no nome do arquivo e no `.joblib.meta.json`, junto com a versão do scikit-learn, o gatilho e as estatísticas de treino. O carregamento valida o hash antes de `joblib.load`.
+- A tabela `modelos` guarda apenas `versao`, `algoritmo`, `caminho_arquivo` e `criado_em`; o hash não é uma coluna do banco.
 - A versão ativa é a maior `versao` com `criado_em >= usuarios.data_mudanca_senha`, respeitando `active_version.json` quando presente.
 - Após uma troca de senha, modelos anteriores são ignorados e `activate_model_version` rejeita versões pré-troca.
 - Em falha de treinamento durante a troca de senha, o backend chama `POST /api/models/rollback` para remover modelos criados após o timestamp e restaurar a versão ativa anterior.
-- O retreinamento pode ser **incremental** (adapta o `AdaptiveM2005Alg` com as novas amostras genuínas, preservando o ramo crescente Welford e a janela deslizante) ou **completo** (reconstrói a partir da janela de amostras genuínas).
+- O retreinamento pode ser **incremental** (adapta o `AdaptiveM2005Alg` com as novas amostras genuínas, preservando o ramo crescente Welford e a janela deslizante) ou **completo** (reconstrói o modelo com as amostras genuínas posteriores à troca; no caminho legado `M2005Alg`, a galeria é limitada a `RETRAIN_GENUINE_WINDOW`).
 
 ---
 
