@@ -18,11 +18,11 @@ Este documento estabelece as diretrizes operacionais, arquiteturais e de qualida
   - Módulos puros de ciência de dados e aprendizado de máquina (`features.py`, `m2005.py`, `training.py`, `registry.py`, `inference.py`).
   - **Proibido** importar classes de `rest_framework` ou objetos HTTP (`Request`, `Response`) dentro de `biometrics/ml/`.
 - **`biometrics/services.py` (Camada de Aplicação / Orquestração):**
-  - Concentra toda a lógica transacional, regras de domínio (`enroll_user`, `authenticate_user`, `label_for`, `retrain_user`, `retrain_due_users`, `activate_model_version`) e controle de concorrência (`select_for_update(skip_locked=True)`). O cadastro de usuários é responsabilidade exclusiva do `projeto-si-backend`.
+  - Concentra toda a lógica transacional, regras de domínio (`enroll_user`, `authenticate_user`, `label_for`, `retrain_user`, `retrain_due_users`, `activate_model_version`, `rollback_models_after`) e controle de concorrência (`select_for_update(skip_locked=True)`). O cadastro de usuários é responsabilidade exclusiva do `projeto-si-backend`.
 - **`biometrics/views.py` e `biometrics/serializers.py` (Camada HTTP):**
-  - Responsáveis exclusivamente por validar formatos de entrada, delegar a execução para `biometrics/services.py` e traduzir resultados ou exceções de domínio nos códigos HTTP do contrato (`200`, `201`, `400`, `401`, `404`, `409`).
+  - Responsáveis exclusivamente por validar formatos de entrada, delegar a execução para `biometrics/services.py` e traduzir resultados ou exceções de domínio nos códigos HTTP do contrato (`200`, `201`, `400`, `401`, `404`, `409`, `429`, `500`).
 - **`biometrics/models.py` (Persistência):**
-  - Define `BiometricProfile`, `KeystrokeSample` e `TrainedModel` com constraints de integridade no banco de dados (`unique_model_version` e `single_active_model`).
+  - Define `User`, `Amostra` e `ModeloBiometrico` com constraints de integridade no banco de dados (`unique_model_version` e `single_active_model`).
 
 ### 2.2. Qualidade de Código e Segurança
 - **Tipagem e Estilo:** Utilizar *type hints* do Python 3.12+ (`list[str]`, `dict[str, float]`, `X | None`) e manter conformidade estrita com `ruff check .` (zero avisos ou erros).
@@ -37,7 +37,7 @@ Este documento estabelece as diretrizes operacionais, arquiteturais e de qualida
   - `tests/test_features.py`: validação de faixas (`H`, `DD`, `UD`), estrutura `3n-2`, preservação/validação estrita de ordem e vetorização.
   - `tests/test_training.py`: treinamento do `AdaptiveM2005Alg` (`M2005_IDB`) utilizando exclusivamente amostras genuínas, preservação do crescimento incremental Welford vs janela deslizante limitada e compatibilidade com `M2005Alg`.
   - `tests/test_registry.py`: versionamento incremental, constraint de modelo único ativo, bloqueio de arquivo adulterado (SHA-256) e cache LRU.
-  - `tests/test_api.py`: fluxo de enrollment (criando apenas o modelo) e autenticação sem senha (com validação estrita de dimensão/ordem de features, retorno de `shouldRecordForRetraining` e zero escrita em `amostras`), remoção de `/api/register` (`404`) e códigos HTTP (`200`, `201`, `400`, `404`, `409`).
+  - `tests/test_api.py`: fluxo de enrollment (criando apenas o modelo), autenticação sem senha (com validação estrita de dimensão/ordem de features, retorno de `shouldRecordForRetraining` e zero escrita em `amostras`), remoção de `/api/register` (`404`) e códigos HTTP (`200`, `201`, `400`, `404`, `409`, `429`, `500`), incluindo o endpoint interno `/api/models/rollback`.
   - `tests/test_retrain.py`: janelas deslizantes de amostras, exclusão de `UNCERTAIN`, `--force` e rollback via `activate_model`.
 - Antes de encerrar qualquer tarefa, execute obrigatoriamente:
   ```bash

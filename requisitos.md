@@ -39,7 +39,19 @@ O **`M2005_IDB`** (`AdaptiveM2005Alg(threshold=0.7, variant="idb", window_size=5
      $$b_1 = \min(\mu_k, m_k) \cdot \left(0.95 - \frac{\sigma_k}{\mu_k}\right), \quad b_2 = \max(\mu_k, m_k) \cdot \left(1.05 + \frac{\sigma_k}{\mu_k}\right)$$
    - Acertos somam `1.0` (após erro ou início) ou `1.5` (consecutivos), normalizados em $[0, 1]$, e o escore final do `M2005_IDB` é $\frac{\text{Score}_{\text{sliding}} + \text{Score}_{\text{growing}}}{2}$, comparado ao limiar calibrado do usuário (`min`/`min_non_outlier`, limitado ao teto base `0.7`).
 3. **Compatibilidade Retroativa (`M2005Alg`):**
-   - A classe `M2005Alg` permanece disponível via configuração `BIOMETRICS["M2005"]["algorithm"] = "M2005_Pisani2024_Sliding_Dynamic"` (ou `"M2005_DB"` para `AdaptiveM2005Alg(variant="db")`) e para carregar modelos `.joblib` legados.
+   - A classe `M2005Alg` permanece disponível configurando `BIOMETRICS_ALGORITHM=M2005_Pisani2024_Sliding_Dynamic` (ou `M2005_DB` para `AdaptiveM2005Alg(variant="db")`) e para carregar modelos `.joblib` legados.
+
+### Configuração do Algoritmo (Variáveis de Ambiente)
+
+| Variável | Padrão | Descrição |
+|---|---|---|
+| `BIOMETRICS_ALGORITHM` | `M2005_IDB` | Algoritmo de produção (`M2005_IDB`, `M2005_DB` ou `M2005_Pisani2024_Sliding_Dynamic`). |
+| `BIOMETRICS_M2005_VARIANT` | `idb` | Variante do `AdaptiveM2005Alg` (`idb` ou `db`). |
+| `BIOMETRICS_DECISION_THRESHOLD` | `0.7` | Teto do limiar calibrado por usuário. |
+| `BIOMETRICS_THRESHOLD_METHOD` | `min_non_outlier` | Método de calibração (`min` ou `min_non_outlier`). |
+| `BIOMETRICS_THRESHOLD_DYNAMIC` | `True` | Recalibração do limiar após adaptação/retreinamento. |
+| `BIOMETRICS_RETRAIN_GENUINE_WINDOW` | `50` | Tamanho da janela deslizante de amostras genuínas. |
+| `BIOMETRICS_LABEL_CONFIDENCE_MARGIN` | `0.15` | Banda de incerteza usada em `label_for`/`shouldRecordForRetraining`. |
 
 ---
 
@@ -97,3 +109,4 @@ O **`M2005_IDB`** (`AdaptiveM2005Alg(threshold=0.7, variant="idb", window_size=5
 | `1.11.0` | 2026-11-15 | Thiago Dias / Antigravity | Remoção do suporte a `samples`/`features`/raw fallback: `/api/enrollment` aceita somente `vectors` e `/api/authenticate` somente `vector`, com schema posicional `3n-2`; gravação de modelo com compensação de arquivos em falha de banco. |
 | `1.12.0` | 2026-11-15 | Thiago Dias / Antigravity | Isolamento estrito de modelos por `data_mudanca_senha`, bloqueio de rollback para versões antigas e endpoint interno `/api/models/rollback` para compensar falhas na troca de senha. |
 | `1.13.0` | 2026-11-15 | Thiago Dias / Antigravity | Registro de melhorias futuras para recuperação após queda durante troca de senha e proteção do endpoint interno de rollback. |
+| `1.14.0` | 2026-11-16 | Thiago Dias / Antigravity | Alinhamento da documentação de uso: README com instalação local/Docker, endpoints, ciclo de vida/rollback de modelos e variáveis de ambiente do `M2005_IDB`; `pyproject.toml` e `.env.example` atualizados para o algoritmo de produção. |
