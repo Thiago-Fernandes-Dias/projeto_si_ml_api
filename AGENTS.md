@@ -38,7 +38,7 @@ Este documento estabelece as diretrizes operacionais, arquiteturais e de qualida
   - `tests/test_training.py`: treinamento do `AdaptiveM2005Alg` (`M2005_IDB`) utilizando exclusivamente amostras genuínas, preservação do crescimento incremental Welford vs janela deslizante limitada e compatibilidade com `M2005Alg`.
   - `tests/test_registry.py`: versionamento incremental, troca da versão ativa via `active_version.json`, bloqueio de arquivo adulterado (SHA-256) e cache LRU.
   - `tests/test_api.py`: fluxo de enrollment (criando apenas o modelo), autenticação sem senha (com validação estrita de dimensão/ordem de features, retorno de `shouldRecordForRetraining` e zero escrita em `amostras`), remoção de `/api/register` (`404`) e códigos HTTP (`200`, `201`, `400`, `404`, `409`, `429`, `500`), incluindo o endpoint interno `/api/models/rollback`.
-  - `tests/test_retrain.py`: janelas deslizantes de amostras, exclusão de `UNCERTAIN`, `--force` e rollback via `activate_model`.
+  - `tests/test_retrain.py`: janelas deslizantes de amostras, exclusão de amostras abaixo do threshold, `--force` e rollback via `activate_model`.
   - `tests/test_logging.py`: redação de dados sensíveis, propagação de `X-Correlation-ID` e ativação de logs de depuração.
 - Antes de encerrar qualquer tarefa, execute obrigatoriamente:
   ```bash

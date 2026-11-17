@@ -12,13 +12,12 @@ A API utiliza o classificador estatístico adaptativo **`M2005_IDB`** (`Adaptive
 
 - **Submodelo Deslizante (`window_size=50`):** Mantém média, mediana e desvio-padrão por dígrafo sobre as `50` amostras genuínas mais recentes, capturando a evolução recente do usuário.
 - **Submodelo Crescente Incremental (Welford $O(1)$):** Acumula média e desvio-padrão online sobre **todo** o histórico genuíno do usuário desde o cadastro (preservado incrementalmente no retreinamento), impedindo deriva ou esquecimento catastrófico.
-- **Calibração de Limiar (`min` / `min_non_outlier`):** Após o treinamento (e a cada retreinamento, com `dynamic_threshold=True`), o limiar do usuário é calibrado a partir dos scores da galeria genuína: `min` usa o menor score; `min_non_outlier` descarta scores abaixo de `mean - 2.5 * std` antes de tomar o mínimo. O valor é limitado ao teto base `0.7`. O limiar calibrado é usado na decisão e na resposta de `/api/authenticate`.
+- **Calibração de Limiar (`min` / `min_non_outlier`):** Após o treinamento (e a cada retreinamento, com `dynamic_threshold=True`), o limiar do usuário é calibrado a partir dos scores da galeria genuína: `min` usa o menor score; `min_non_outlier` descarta scores abaixo de `mean - 2.5 * std` antes de tomar o mínimo. O limiar calibrado é usado diretamente, sem teto fixo, na decisão e na resposta de `/api/authenticate`.
   - O `M2005_IDB` original de Pisani et al. (2015) usa threshold fixo; a calibração e a recalibração dinâmica vêm de Pisani (2024).
-  - O teto `0.7` é uma decisão deste projeto. O `M2005Alg` do `projeto_si_experimentos` segue Pisani (2024) sem esse cap (o threshold pode chegar ao mínimo dos scores da galeria).
 - **Decisão e Desempenho Experimental (`projeto_si_experimentos`):** Score final dado pela média aritmética dos submodelos deslizante e crescente (resultados medidos com `threshold = 0.7`):
   - **CMU (`DSL-StrongPasswordData.csv`):** `BACC = 0.8909`, **FRR = `15.24%`** e **FAR = `6.58%`** (3× menor que os `18.98%` do `M2005_Pisani2024_Sliding_Dynamic`).
   - **Keyrecs:** `BACC = 0.7980`, **FRR = `9.03%`** e **FAR = `31.37%`** (`+7.61 p.p.` de BACC e `-18.96 p.p.` de FAR frente ao `M2005_Pisani2024_Sliding_Dynamic`).
-- **Treinamento One-Class:** o enrollment usa apenas os vetores genuínos fornecidos; no retreinamento, entram as amostras de `Cadastro` e as de `Login` que sejam `Genuine` e superem a banda de confiança. `IMPOSTOR` e `UNCERTAIN` são descartadas.
+- **Treinamento One-Class:** o enrollment usa apenas os vetores genuínos fornecidos; no retreinamento, entram as amostras de `Cadastro` e as de `Login` que sejam `Genuine`. `IMPOSTOR` é descartado.
 
 ### Configuração do algoritmo
 
@@ -26,7 +25,7 @@ A API utiliza o classificador estatístico adaptativo **`M2005_IDB`** (`Adaptive
 |---|---|---|
 | `BIOMETRICS_ALGORITHM` | `M2005_IDB` | `M2005_IDB`, `M2005_DB` ou `M2005_Pisani2024_Sliding_Dynamic`. |
 | `BIOMETRICS_M2005_VARIANT` | `idb` | Variante do `AdaptiveM2005Alg` (`idb` ou `db`) quando aplicável. |
-| `BIOMETRICS_DECISION_THRESHOLD` | `0.7` | Teto do limiar calibrado por usuário. |
+| `BIOMETRICS_DECISION_THRESHOLD` | `0.7` | Threshold base usado quando não há modelo calibrado. |
 | `BIOMETRICS_THRESHOLD_METHOD` | `min_non_outlier` | Método de calibração (`min` ou `min_non_outlier`). |
 | `BIOMETRICS_THRESHOLD_DYNAMIC` | `True` | Recalibra o limiar após cada adaptação/retreinamento. |
 | `BIOMETRICS_RETRAIN_GENUINE_WINDOW` | `50` | Tamanho da janela deslizante de amostras genuínas. |
@@ -180,10 +179,9 @@ O Compose da raiz do projeto reaproveita esta imagem e usa o serviço `postgres`
 | `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1,testserver,api` | Hosts permitidos. |
 | `DATABASE_URL` | `postgres://projeto_si:projeto_si_dev@localhost:5432/projeto_si` | Banco compartilhado. Sem ela, usa SQLite. |
 | `BIOMETRICS_ENROLLMENT_SAMPLES` | `5` | Quantidade exata de vetores no enrollment. |
-| `BIOMETRICS_DECISION_THRESHOLD` | `0.7` | Teto do limiar calibrado. |
+| `BIOMETRICS_DECISION_THRESHOLD` | `0.7` | Threshold base usado quando não há modelo calibrado. |
 | `BIOMETRICS_THRESHOLD_METHOD` | `min_non_outlier` | Método de calibração do limiar. |
 | `BIOMETRICS_THRESHOLD_DYNAMIC` | `True` | Recalibração dinâmica após adaptação. |
-| `BIOMETRICS_LABEL_CONFIDENCE_MARGIN` | `0.15` | Banda de incerteza para rotulagem/retreinamento. |
 | `BIOMETRICS_RETRAIN_INTERVAL_MINUTES` | `60` | Intervalo do scheduler. |
 | `BIOMETRICS_RETRAIN_MIN_NEW_SAMPLES` | `5` | Novas amostras genuínas necessárias para retreinar. |
 | `BIOMETRICS_RETRAIN_GENUINE_WINDOW` | `50` | Janela deslizante de amostras genuínas. |
@@ -264,7 +262,7 @@ Resposta `200` (resumida):
 }
 ```
 
-`shouldRecordForRetraining` é `true` somente quando a decisão é `GENUINE` e o score atinge `threshold + LABEL_CONFIDENCE_MARGIN` (`0.15` por padrão), ou seja, quando a amostra é confiável o bastante para alimentar o retreinamento. A ML API **não** grava a amostra; o backend .NET decide persisti-la.
+`shouldRecordForRetraining` é `true` quando a decisão é `GENUINE` (`score >= threshold`). A ML API **não** grava a amostra; o backend .NET decide persisti-la.
 
 ---
 
