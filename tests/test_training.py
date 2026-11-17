@@ -31,7 +31,7 @@ def test_train_user_model_separates_genuine_from_2x_slower_impostor() -> None:
     assert result.stats["base_threshold"] == 0.7
     assert result.stats["threshold_method"] == "min_non_outlier"
     assert result.stats["dynamic_threshold"] is True
-    assert model.threshold <= 0.7
+    assert model.threshold == pytest.approx(result.stats["threshold"])
     assert "synthetic" not in result.stats
     assert "real_impostors" not in result.stats
 
@@ -65,7 +65,7 @@ def test_m2005_consecutive_hit_weighting_and_sliding_dynamic_threshold() -> None
 
     all_hit = pd.Series({"H.a": 0.10, "DD.a.b": 0.20, "UD.a.b": -0.05})
     assert np.isclose(model.calculate_score(all_hit), 1.0)
-    assert np.isclose(model.threshold, 0.7)
+    assert np.isclose(model.threshold, 1.0)
 
     first_two_hit = pd.Series({"H.a": 0.10, "DD.a.b": 0.20, "UD.a.b": -0.40})
     assert np.isclose(model.calculate_score(first_two_hit), (1.0 + 1.5) / 4.0)
@@ -75,7 +75,7 @@ def test_m2005_consecutive_hit_weighting_and_sliding_dynamic_threshold() -> None
 
     model.adapt(first_two_hit)
     assert len(model._gallery) == 3
-    assert model.threshold <= 0.7
+    assert model.threshold == pytest.approx((1.0 + 1.5) / 4.0)
 
 
 def test_adaptive_m2005_idb_welford_grows_while_sliding_stays_bounded(settings: object) -> None:
@@ -154,11 +154,11 @@ def test_adaptive_m2005_idb_calibrates_threshold_with_min_and_min_non_outlier() 
         threshold_method="min",
         dynamic_threshold=False,
     ).fit(data)
-    assert min_model.threshold == pytest.approx(min(float(np.min(scores)), 0.7))
+    assert min_model.threshold == pytest.approx(float(np.min(scores)))
 
     lower_cutoff = float(np.mean(scores) - 2.5 * np.std(scores, ddof=1))
     filtered = scores[scores > lower_cutoff]
-    expected_non_outlier = min(float(np.min(filtered)), 0.7)
+    expected_non_outlier = float(np.min(filtered))
     non_outlier_model = AdaptiveM2005Alg(
         threshold=0.7,
         variant="idb",
@@ -194,4 +194,4 @@ def test_adaptive_m2005_idb_dynamic_threshold_recalibrates_after_adaptation() ->
     scores = np.array(
         [dynamic_model.calculate_score(sample) for sample in dynamic_model._gallery]
     )
-    assert dynamic_model.threshold == pytest.approx(min(float(np.min(scores)), 0.7))
+    assert dynamic_model.threshold == pytest.approx(float(np.min(scores)))

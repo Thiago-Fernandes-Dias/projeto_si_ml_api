@@ -242,20 +242,11 @@ def enroll_user(
 def label_for(
     probability: float,
     threshold: float | None = None,
-    margin: float | None = None,
 ) -> SampleLabel:
     decision_threshold = (
         float(settings.BIOMETRICS["DECISION_THRESHOLD"]) if threshold is None else float(threshold)
     )
-    confidence_margin = (
-        float(settings.BIOMETRICS["LABEL_CONFIDENCE_MARGIN"]) if margin is None else float(margin)
-    )
-
-    if probability >= decision_threshold + confidence_margin:
-        return SampleLabel.GENUINE
-    if probability <= decision_threshold - confidence_margin:
-        return SampleLabel.IMPOSTOR
-    return SampleLabel.UNCERTAIN
+    return SampleLabel.GENUINE if probability >= decision_threshold else SampleLabel.IMPOSTOR
 
 
 def authenticate_user(
@@ -384,14 +375,11 @@ def retrain_user(
                 )
             except Exception:
                 prev_estimator = None
-        margin = float(settings.BIOMETRICS["LABEL_CONFIDENCE_MARGIN"])
-        genuine_min_conf = retrain_threshold + margin
-
         new_logins_qs = Amostra.objects.filter(
             usuario=locked_user,
             origem=OrigemAmostra.LOGIN,
             decisao=DecisaoBiometrica.GENUINE,
-            confianca__gte=genuine_min_conf,
+            confianca__gte=retrain_threshold,
             coletada_em__gte=locked_user.data_mudanca_senha,
         )
         if active_model is not None:
@@ -448,7 +436,7 @@ def retrain_user(
                     | models.Q(
                         origem=OrigemAmostra.LOGIN,
                         decisao=DecisaoBiometrica.GENUINE,
-                        confianca__gte=genuine_min_conf,
+                        confianca__gte=retrain_threshold,
                     )
                 )
                 .order_by("coletada_em", "id")

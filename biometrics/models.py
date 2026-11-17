@@ -70,7 +70,6 @@ class DecisaoBiometrica(models.TextChoices):
 class SampleLabel(models.TextChoices):
     GENUINE = "GENUINE", "Genuine"
     IMPOSTOR = "IMPOSTOR", "Impostor"
-    UNCERTAIN = "UNCERTAIN", "Uncertain"
 
 
 class TrainingTrigger(models.TextChoices):

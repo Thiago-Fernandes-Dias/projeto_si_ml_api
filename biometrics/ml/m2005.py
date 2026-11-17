@@ -198,17 +198,15 @@ class M2005Alg(BaseEstimator):
             return self.threshold
         scores = np.array([self.calculate_score(sample) for sample in self._gallery], dtype=float)
         if method == "min" or len(scores) <= 1:
-            raw_threshold = float(np.min(scores))
-            self.threshold = float(min(raw_threshold, self._base_threshold))
+            self.threshold = float(np.min(scores))
             return self.threshold
 
         # Pisani (2024) min-non-outlier: S_j^n = {s in S_j | s > mean(S_j) - 2.5 * std(S_j)}
         lower_cutoff = float(np.mean(scores) - outlier_std_factor * np.std(scores, ddof=1))
         filtered_scores = scores[scores > lower_cutoff]
-        raw_threshold = (
+        self.threshold = (
             float(np.min(filtered_scores)) if len(filtered_scores) > 0 else float(np.min(scores))
         )
-        self.threshold = float(min(raw_threshold, self._base_threshold))
         return self.threshold
 
     def should_include_sample(self, x: pd.Series | pd.DataFrame | np.ndarray) -> bool:
@@ -489,7 +487,7 @@ class AdaptiveM2005Alg(BaseEstimator):
                 else float(np.min(scores))
             )
 
-        self.threshold = float(min(raw_threshold, self._base_threshold))
+        self.threshold = float(raw_threshold)
         return self.threshold
 
     def should_include_sample(self, x: pd.Series | pd.DataFrame | np.ndarray) -> bool:

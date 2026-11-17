@@ -38,7 +38,7 @@ def test_retrain_skips_users_without_enough_new_samples_and_supports_force() -> 
 
 
 @pytest.mark.django_db
-def test_retrain_respects_genuine_window_excludes_uncertain_and_impostors_and_supports_rollback(
+def test_retrain_respects_genuine_window_and_supports_rollback(
     settings: Any,
 ) -> None:
     settings.BIOMETRICS = {
@@ -49,6 +49,9 @@ def test_retrain_respects_genuine_window_excludes_uncertain_and_impostors_and_su
     user = _create_enrolled_user("user_window")
     v1 = get_active_model(user)
     assert v1 is not None
+    threshold = float(load_model(v1).threshold)
+    low_confidence = max(0.0, threshold - 0.01)
+    high_confidence = min(1.0, threshold + 0.01)
 
     base_vec = list(CMU_SAMPLE_VECTOR)
 
@@ -58,7 +61,7 @@ def test_retrain_respects_genuine_window_excludes_uncertain_and_impostors_and_su
             origem=OrigemAmostra.LOGIN,
             vetor=base_vec,
             decisao=DecisaoBiometrica.GENUINE,
-            confianca=0.68,
+            confianca=low_confidence,
             modelo=v1,
         )
 
@@ -80,8 +83,9 @@ def test_retrain_respects_genuine_window_excludes_uncertain_and_impostors_and_su
             origem=OrigemAmostra.LOGIN,
             vetor=[v * factor for v in base_vec],
             decisao=DecisaoBiometrica.GENUINE,
-            confianca=0.98,
+            confianca=high_confidence,
             modelo=v1,
+            coletada_em=timezone.now() + timedelta(seconds=1),
         )
 
     retrained = retrain_due_users(force=False)
@@ -134,6 +138,7 @@ def test_incremental_retrain_preserves_payload_enrollment_and_feature_keys(setti
     vectors = make_genuine_vectors(count=5, seed=202)
     v1 = enroll_user(username="payload_user", vectors=vectors)
     assert Amostra.objects.filter(usuario=user).count() == 0
+    high_confidence = min(1.0, float(load_model(v1).threshold) + 0.01)
 
     base_vec = list(CMU_SAMPLE_VECTOR)
     for factor in (1.00, 1.01, 0.99):
@@ -142,8 +147,9 @@ def test_incremental_retrain_preserves_payload_enrollment_and_feature_keys(setti
             origem=OrigemAmostra.LOGIN,
             vetor=[v * factor for v in base_vec],
             decisao=DecisaoBiometrica.GENUINE,
-            confianca=0.95,
+            confianca=high_confidence,
             modelo=v1,
+            coletada_em=timezone.now() + timedelta(seconds=1),
         )
 
     retrained = retrain_due_users(force=False)

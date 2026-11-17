@@ -1,7 +1,8 @@
 import pytest
 from rest_framework.test import APIClient
 
-from biometrics.models import KeystrokeSample, TrainedModel
+from biometrics.models import KeystrokeSample, SampleLabel, TrainedModel
+from biometrics.services import label_for
 from tests.conftest import (
     CMU_SAMPLE_VECTOR,
     create_user_in_db,
@@ -16,6 +17,12 @@ def test_health_endpoint() -> None:
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "database": "ok"}
+
+
+def test_label_for_has_no_acceptance_margin() -> None:
+    assert label_for(0.70, threshold=0.7) == SampleLabel.GENUINE
+    assert label_for(0.71, threshold=0.7) == SampleLabel.GENUINE
+    assert label_for(0.69, threshold=0.7) == SampleLabel.IMPOSTOR
 
 
 @pytest.mark.django_db
@@ -83,31 +90,12 @@ def test_full_flow_enrollment_and_authenticate() -> None:
     genuine_body = genuine_res.json()
     assert genuine_body["decision"] == "GENUINE"
     assert genuine_body["confidence"] >= 0.90
-    assert 0.0 < genuine_body["threshold"] <= 0.7
+    assert genuine_body["threshold"] > 0.0
     assert genuine_body["inferenceTimeMs"] > 0
     assert genuine_body["meanHoldTimeMs"] > 0
     assert genuine_body["userAverageHoldTimeMs"] > 0
     assert genuine_body["modelVersion"] == 1
     assert genuine_body["shouldRecordForRetraining"] is True
-
-    borderline_vector = [
-        round(value * 2.0, 4) if idx < 6 else value
-        for idx, value in enumerate(CMU_SAMPLE_VECTOR)
-    ]
-    borderline_res = client.post(
-        "/api/authenticate",
-        {
-            "username": "thiago_dias",
-            "vector": borderline_vector,
-        },
-        format="json",
-    )
-    assert borderline_res.status_code == 200
-    borderline_body = borderline_res.json()
-    assert borderline_body["decision"] == "GENUINE"
-    threshold_val = borderline_body["threshold"]
-    assert threshold_val <= borderline_body["confidence"] < threshold_val + 0.15
-    assert borderline_body["shouldRecordForRetraining"] is False
 
     impostor_vector = [round(value * 2.0, 4) for value in CMU_SAMPLE_VECTOR]
     impostor_res = client.post(
